@@ -89,14 +89,38 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: ""
+        Value: /robot_description
       Enabled: true
       Links:
         All Links Enabled: true
+        Base_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Elbow_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
-        Link Tree Style: ""
+        Forearm_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link Tree Style: Links in Alphabetic Order
+        Shoulder_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
       Mass Properties:
         Inertia: false
         Mass: false
