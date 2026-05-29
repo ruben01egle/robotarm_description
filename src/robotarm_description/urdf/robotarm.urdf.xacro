@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robotarm">
+
+  <xacro:include filename="$(find robotarm_description)/urdf/robotarm_geometry.xacro" />
+  <xacro:include filename="$(find robotarm_description)/urdf/robotarm.ros2_control.xacro" />
+
+  <xacro:robotarm_geometry />
+
+  <xacro:robotarm_ros2_control name="MoteusHardwareSystem" />
+
+</robot>
