@@ -27,8 +27,15 @@
     
     "runArgs": [
         "--network=host",
-        "--privileged"
+        "--ipc=host",
+        "--privileged",
+        "--env=DISPLAY=${localEnv:DISPLAY}"
     ],
+
+    "containerEnv": {
+        "QT_QPA_PLATFORM": "xcb",
+        "DISPLAY": "${localEnv:DISPLAY}"
+    },
     
     "postCreateCommand": "rosdep update"
 }

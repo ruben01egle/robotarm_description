@@ -12,7 +12,7 @@
                 <mesh filename="package://robotarm_description/meshes/Base_1.stl"/>
             </geometry>
             <material name="Base_1-material">
-                <color rgba="0.1 0.1 0.1 1"/>
+                <color rgba="0.5 0.5 0.5 1"/>
             </material>
         </visual>
         <collision name="Base_1_collision">
@@ -34,7 +34,7 @@
             <mesh filename="package://robotarm_description/meshes/Shoulder_1.stl"/>
         </geometry>
         <material name="Shoulder_1-material">
-            <color rgba="0.1 0.1 0.1 1"/>
+            <color rgba="0.5 0.5 0.5 1"/>
         </material>
         </visual>
         <collision name="Shoulder_1_collision">
@@ -56,7 +56,7 @@
             <mesh filename="package://robotarm_description/meshes/Elbow_1.stl"/>
         </geometry>
         <material name="Elbow_1-material">
-            <color rgba="0.1 0.1 0.1 1"/>
+            <color rgba="0.5 0.5 0.5 1"/>
         </material>
         </visual>
         <collision name="Elbow_1_collision">
@@ -78,7 +78,7 @@
             <mesh filename="package://robotarm_description/meshes/Forearm_1.stl"/>
         </geometry>
         <material name="Forearm_1-material">
-            <color rgba="0.1 0.1 0.1 1"/>
+            <color rgba="0.5 0.5 0.5 1"/>
         </material>
         </visual>
         <collision name="Forearm_1_collision">
