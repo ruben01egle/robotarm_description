@@ -22,6 +22,7 @@
         <state_interface name="effort"/>
         <param name="can_id">1</param>
         <param name="encoder_offset">0.1234</param>
+        <param name="gear_ratio">0.166667</param>
       </joint>
 
       <joint name="axis2">
@@ -33,6 +34,7 @@
         <state_interface name="effort"/>
         <param name="can_id">2</param>
         <param name="encoder_offset">0.1234</param>
+        <param name="gear_ratio">0.033333</param>
       </joint>
 
       <joint name="axis3">
@@ -44,6 +46,7 @@
         <state_interface name="effort"/>
         <param name="can_id">3</param>
         <param name="encoder_offset">0.1234</param>
+        <param name="gear_ratio">0.087302</param>
       </joint>
 
       </ros2_control>
