@@ -21,7 +21,7 @@
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
         <param name="can_id">1</param>
-        <param name="encoder_offset">0.1234</param>
+        <param name="encoder_offset">0.0</param>
         <param name="gear_ratio">0.166667</param>
       </joint>
 
@@ -33,7 +33,7 @@
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
         <param name="can_id">2</param>
-        <param name="encoder_offset">0.1234</param>
+        <param name="encoder_offset">0.0</param>
         <param name="gear_ratio">0.033333</param>
       </joint>
 
@@ -45,7 +45,7 @@
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
         <param name="can_id">3</param>
-        <param name="encoder_offset">0.1234</param>
+        <param name="encoder_offset">0.0</param>
         <param name="gear_ratio">0.087302</param>
       </joint>
 
