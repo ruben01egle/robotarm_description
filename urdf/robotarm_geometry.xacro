@@ -103,21 +103,21 @@
         <parent link="Base_1"/>
         <child link="Shoulder_1"/>
         <axis xyz="0 0 1"/>
-        <limit effort="8" velocity="25" lower="-2.80" upper="2.80"/>
+        <limit effort="8" velocity="5.0" lower="-2.80" upper="2.80"/>
     </joint>
     <joint name="axis2" type="revolute">
         <origin xyz="0.025 0.094 0.213" rpy="-1.5707963 1.5707963 0"/>
         <parent link="Shoulder_1"/>
         <child link="Elbow_1"/>
         <axis xyz="0 0 1"/>
-        <limit effort="30" velocity="25" lower="-2.80" upper="0.35"/>
+        <limit effort="30" velocity="4.0" lower="-2.80" upper="0.35"/>
     </joint>
     <joint name="axis3" type="revolute">
         <origin xyz="0.0002 -0.3 0.004" rpy="0 0 -1.5707963"/>
         <parent link="Elbow_1"/>
         <child link="Forearm_1"/>
         <axis xyz="0 0 1"/>
-        <limit effort="12" velocity="25" lower="-2.01" upper="2.36"/>
+        <limit effort="12" velocity="4.0" lower="-2.01" upper="2.36"/>
     </joint>
 
   </xacro:macro>
