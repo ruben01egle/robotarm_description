@@ -8,7 +8,8 @@
         <xacro:if value="${use_hardware}">
           <plugin>moteus_interface/MoteusInterface</plugin>
         </xacro:if>
-        <plugin>mock_components/GenericSystem</plugin>
+        <xacro:unless value="${use_hardware}">
+          <plugin>mock_components/GenericSystem</plugin>
           <param name="mock_interfaces">true</param>
         </xacro:unless>
       </hardware> 
