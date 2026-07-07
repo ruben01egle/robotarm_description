@@ -6,6 +6,6 @@
 
   <xacro:robotarm_geometry />
 
-  <xacro:robotarm_ros2_control name="MoteusHardwareSystem" use_hardware="$(arg use_hardware)" />
+  <xacro:robotarm_ros2_control name="moteus_hardware_system" use_hardware="$(arg use_hardware)" />
 
 </robot>
