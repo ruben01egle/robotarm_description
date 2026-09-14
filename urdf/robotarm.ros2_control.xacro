@@ -13,6 +13,7 @@
           <param name="mock_interfaces">true</param>
         </xacro:unless>
       </hardware> 
+
       <joint name="axis1">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
@@ -20,9 +21,7 @@
         <state_interface name="position"/>
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
-        <param name="can_id">1</param>
         <param name="encoder_offset">0.0</param>
-        <param name="gear_ratio">0.166667</param>
       </joint>
 
       <joint name="axis2">
@@ -32,9 +31,7 @@
         <state_interface name="position"/>
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
-        <param name="can_id">2</param>
         <param name="encoder_offset">0.0</param>
-        <param name="gear_ratio">0.033333</param>
       </joint>
 
       <joint name="axis3">
@@ -44,10 +41,49 @@
         <state_interface name="position"/>
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
-        <param name="can_id">3</param>
         <param name="encoder_offset">0.0</param>
-        <param name="gear_ratio">0.087302</param>
       </joint>
+
+      <transmission name="axis1_transmission">
+        <plugin>identity</plugin>
+        <joint name="axis1"/>
+        <actuator name="axis1_motor"/>
+        <param name="axis1_motor.can_id">1</param>
+      </transmission>
+
+      <transmission name="axis2_transmission">
+        <plugin>identity</plugin>
+        <joint name="axis2"/>
+        <actuator name="axis2_motor"/>
+        <param name="axis2_motor.can_id">2</param>
+      </transmission>
+
+      <transmission name="axis3_transmission">
+        <plugin>identity</plugin>
+        <joint name="axis3"/>
+        <actuator name="axis3_motor"/>
+        <param name="axis3_motor.can_id">3</param>
+      </transmission>
+
+      <!--
+        <transmission name="axis4_transmission">
+          <plugin>identity</plugin>
+          <joint name="axis4"/>
+          <actuator name="axis4_motor"/>
+          <param name="axis4_motor.can_id">4</param>
+        </transmission>
+
+        <transmission name="wrist_transmission">
+          <plugin>differential</plugin>
+          <joint name="axis5"/>
+          <joint name="axis6"/>
+          <actuator name="wrist_a"/>
+          <actuator name="wrist_b"/>
+          <param name="wrist_a.can_id">5</param>
+          <param name="wrist_b.can_id">6</param>
+          <param name="ratio">1.0</param>
+        </transmission>
+      -->
 
       </ros2_control>
   </xacro:macro>
