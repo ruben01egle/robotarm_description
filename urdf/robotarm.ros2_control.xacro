@@ -78,39 +78,39 @@
 
       <transmission name="axis1_transmission">
         <plugin>identity</plugin>
-        <joint name="axis1"/>
-        <actuator name="axis1_motor"/>
+        <joint name="axis1" role="joint1"/>
+        <actuator name="axis1_motor" role="actuator1"/>
         <param name="axis1_motor.can_id">1</param>
       </transmission>
 
       <transmission name="axis2_transmission">
         <plugin>identity</plugin>
-        <joint name="axis2"/>
-        <actuator name="axis2_motor"/>
+        <joint name="axis2" role="joint1"/>
+        <actuator name="axis2_motor" role="actuator1"/>
         <param name="axis2_motor.can_id">2</param>
       </transmission>
 
       <transmission name="axis3_transmission">
         <plugin>identity</plugin>
-        <joint name="axis3"/>
-        <actuator name="axis3_motor"/>
+        <joint name="axis3" role="joint1"/>
+        <actuator name="axis3_motor" role="actuator1"/>
         <param name="axis3_motor.can_id">3</param>
       </transmission>
 
       <!--
         <transmission name="axis4_transmission">
           <plugin>identity</plugin>
-          <joint name="axis4"/>
-          <actuator name="axis4_motor"/>
+          <joint name="axis4" role="joint1"/>
+          <actuator name="axis4_motor" role="actuator1"/>
           <param name="axis4_motor.can_id">4</param>
         </transmission>
 
         <transmission name="wrist_transmission">
           <plugin>differential</plugin>
-          <joint name="axis5"/>
-          <joint name="axis6"/>
-          <actuator name="wrist_a"/>
-          <actuator name="wrist_b"/>
+          <joint name="axis5" role="joint1"/>
+          <joint name="axis6" role="joint2"/>
+          <actuator name="wrist_a" role="actuator1"/>
+          <actuator name="wrist_b" role="actuator2"/>
           <param name="wrist_a.can_id">5</param>
           <param name="wrist_b.can_id">6</param>
           <param name="ratio">1.0</param>
