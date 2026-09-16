@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "${default}",
+                "limitSymbolsToIncludedHeaders": false
+            },
+            "includePath": [
+                "/opt/ros/jazzy/include/**",
+                "${workspaceFolder}/robotarm_description/include/**",
+                "/usr/include/**"
+            ],
+            "name": "ROS",
+            "intelliSenseMode": "gcc-x64",
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "gnu11",
+            "cppStandard": "c++14",
+            "compileCommands": [
+                "${workspaceFolder}/build/robotarm_kinematics/compile_commands.json"
+            ]
+        },
+        {
+          "name": "Robotarm-Kinematics",
+          "compilerPath": "/usr/bin/gcc",
+          "cStandard": "gnu17",
+          "cppStandard": "c++20",
+          "intelliSenseMode": "linux-gcc-x64",
+          "compileCommands": "${workspaceFolder}/build/robotarm_kinematics/compile_commands.json",
+          "includePath": [
+            "${workspaceFolder}/src/**",
+            "/opt/ros/jazzy/include/**"
+          ]
+        }
+    ],
+    "version": 4
+}

@@ -14,6 +14,7 @@ find_package(Eigen3 REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/KinematicsCore.cpp
+  src/Kinematics.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
