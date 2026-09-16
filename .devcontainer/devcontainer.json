@@ -37,5 +37,5 @@
         "DISPLAY": "${localEnv:DISPLAY}"
     },
     
-    "postCreateCommand": "rosdep update"
+    "postCreateCommand": "rosdep update && rosdep install --from-paths src --ignore-src -r -y"
 }
