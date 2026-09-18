@@ -3,8 +3,6 @@
 
   <xacro:macro name="robotarm_geometry">
 
-    <link name="world"/>
-
     <link name="Base_1">
         <visual name="Base_1_visual">
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -116,7 +114,7 @@
         <inertial>
         <mass value="3.8274779"/>
         <inertia ixx="0.020569953" iyy="0.010754809" izz="0.018897105" ixy="-4.5829188e-07" ixz="-0.00019394419" iyz="-9.8894427e-07"/>
-        <origin xyz="0.001253058 -6.9653344e-07 0.17393003" rpy="0 0 0"/>
+        <origin xyz="0.001253058 0 0.17393003" rpy="0 0 0"/>
         </inertial>
     </link>
 
@@ -162,24 +160,19 @@
         <inertial>
         <mass value="0.10479114"/>
         <inertia ixx="7.1783343e-05" iyy="7.186043e-05" izz="2.5518195e-05" ixy="0" ixz="1.6199037e-07" iyz="0"/>
-        <origin xyz="-4.684366e-05 -4.3121451e-14 0.10862201" rpy="0 0 0"/>
+        <origin xyz="-4.684366e-05 0 0.10862201" rpy="0 0 0"/>
         </inertial>
     </link>
     
-    <joint name="world_link" type="fixed">
-        <origin xyz="0 0 -0.172" rpy="0 0 0"/>
-        <parent link="world"/>
-        <child link="Base_1"/>
-    </joint>
     <joint name="axis1" type="revolute">
-        <origin xyz="9.2664872e-31 4.0506707e-19 0" rpy="-1.4734871e-18 0 -5.5511151e-17"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
         <parent link="Base_1"/>
         <child link="Shoulder_1"/>
         <axis xyz="0 0 1"/>
         <limit effort="1" velocity="1" lower="-3.054326190990077" upper="3.054326190990077"/>
     </joint>
     <joint name="axis2" type="revolute">
-        <origin xyz="0.025 -5.7685454e-32 0.35" rpy="-1.5707963 0 0"/>
+        <origin xyz="0.025 0 0.35" rpy="-1.5707963 0 0"/>
         <parent link="Shoulder_1"/>
         <child link="Elbow_1"/>
         <axis xyz="0 0 1"/>
@@ -193,21 +186,21 @@
         <limit effort="1" velocity="1" lower="-2.0943951023931953" upper="2.356194490192345"/>
     </joint>
     <joint name="axis4" type="revolute">
-        <origin xyz="0 -0.015 -1.7347235e-17" rpy="-1.5707963 0 -1.5707963"/>
+        <origin xyz="0 -0.015 0" rpy="-1.5707963 0 -1.5707963"/>
         <parent link="Forearm_1"/>
         <child link="Stage4_1"/>
         <axis xyz="0 0 1"/>
         <limit effort="1" velocity="1" lower="-3.054326190990077" upper="3.054326190990077"/>
     </joint>
     <joint name="axis5" type="revolute">
-        <origin xyz="1.1506444e-15 -3.8386212e-16 0.252" rpy="1.5707963 -8.8817842e-15 8.3266727e-15"/>
+        <origin xyz="0 0 0.252" rpy="1.5707963 0 0"/>
         <parent link="Stage4_1"/>
         <child link="Stage5_1"/>
         <axis xyz="0 0 1"/>
         <limit effort="1" velocity="1" lower="-2.0071286397934787" upper="2.0071286397934787"/>
     </joint>
     <joint name="axis6" type="revolute">
-        <origin xyz="-3.9595949e-18 3.469447e-18 -3.469447e-18" rpy="-1.5707963 0 0"/>
+        <origin xyz="0 0 0" rpy="-1.5707963 0 0"/>
         <parent link="Stage5_1"/>
         <child link="Stage6_1"/>
         <axis xyz="0 0 1"/>
