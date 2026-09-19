@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(kinematics_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(urdf REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -26,10 +27,28 @@ target_link_libraries(${PROJECT_NAME}
   kinematics_interface::kinematics_interface
   pluginlib::pluginlib
   rclcpp::rclcpp
+  urdf::urdf
   Eigen3::Eigen
 )
 
 pluginlib_export_plugin_description_file(kinematics_interface kinematics_plugins.xml)
+
+# manual check: parses the URDF and prints the joints / DH params, see launch/
+add_executable(kinematics_core_test test/kinematics_core_test.cpp)
+target_link_libraries(kinematics_core_test
+  ${PROJECT_NAME}
+  rclcpp::rclcpp
+)
+
+install(
+  TARGETS kinematics_core_test
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
 
 install(
   TARGETS ${PROJECT_NAME}
@@ -54,6 +73,7 @@ ament_export_dependencies(
   kinematics_interface
   pluginlib
   rclcpp
+  urdf
   eigen3_cmake_module
   Eigen3
 )

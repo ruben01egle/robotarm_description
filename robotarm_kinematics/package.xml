@@ -15,8 +15,14 @@
   <depend>rclcpp</depend>
   <depend>pluginlib</depend>
   <depend>kinematics_interface</depend>
+  <depend>urdf</depend>
   <depend>eigen</depend>
   <depend>eigen3_cmake_module</depend>
+
+  <exec_depend>robotarm_description</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
