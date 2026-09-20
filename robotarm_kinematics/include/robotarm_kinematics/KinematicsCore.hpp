@@ -3,10 +3,15 @@
 
 #include "kinematics_interface/kinematics_interface.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "rclcpp/clock.hpp"
 #include "urdf/model.h"
 
 namespace robotarm_kinematics
 {
+
+    constexpr double angular_eps = 1e-6;  // dimensionless
+	constexpr double linear_eps = 1e-6;   // metres, applied to the residual translation
+	constexpr int log_throttle_ms = 1000; // period of error logs in functions called from the rt loop
 
 class KinematicsCore : public kinematics_interface::KinematicsInterface
 {
@@ -42,7 +47,7 @@ protected:
         Limits limits_;
         InertialParams child_link_inertial_;
         DHParams dhparams_;
-        bool is_fixed_ = false;
+        Eigen::Isometry3d child_urdf_frame_in_child_dh_frame_ = Eigen::Isometry3d::Identity();
     };
 
 public:
@@ -53,9 +58,6 @@ public:
         const std::string &robot_description,
         std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface> parameters_interface,
         const std::string &param_namespace) override;
-
-    // Logs every parsed joint (name, link names, DH params) as a table.
-    void print_joints() const;
 
     virtual bool convert_cartesian_deltas_to_joint_deltas(
         const Eigen::VectorXd &joint_pos,
@@ -86,10 +88,26 @@ public:
         Eigen::Matrix<double,
         Eigen::Dynamic, 6> &jacobian_inverse) override;
 
+    // Logs every parsed joint (name, link names, DH params) as a table.
+    void print_joints() const;
+    Eigen::Isometry3d dh_params_to_isometry(DHParams dhparams, double theta=0);
+
 protected:
     std::vector<Joint> joints_;
+    std::string tcp_link_name_;
 
 private:
+    // true once initialize() has run through; every kinematics function refuses to work before that
+    bool initialised_ = false;
+
+    // steady clock for the throttled error logs in the rt path
+    rclcpp::Clock clock_{RCL_STEADY_TIME};
+
+    // scratch buffer for calculate_jacobian(): the caller's jacobian is only written
+    // once the whole matrix is computed, so a failure leaves it untouched (all or nothing).
+    // Sized in initialize(), so calculate_jacobian() itself does not allocate.
+    Eigen::Matrix<double, 6, Eigen::Dynamic> j_cj_;
+    Eigen::Matrix<double, 6, Eigen::Dynamic> j_cji_;
 };
 
 }
