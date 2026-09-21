@@ -10,6 +10,8 @@ find_package(kinematics_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(urdf REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -36,21 +38,37 @@ target_link_libraries(${PROJECT_NAME}
 
 pluginlib_export_plugin_description_file(kinematics_interface kinematics_plugins.xml)
 
-# manual check: parses the URDF and prints the joints / DH params, see launch/
-add_executable(kinematics_core_test test/kinematics_core_test.cpp)
-target_link_libraries(kinematics_core_test
+# Tools, not part of the library: Cartesian jogging (twists on cmd_vel -> /joint_states), see
+# tools/cartesian_jog/ and its launch file. The kinematics plugin is loaded through pluginlib; the
+# library is linked only to reach the robot model getters of KinematicsCore (joint names, limits, tcp).
+# Nothing under tools/ is installed as a header.
+add_executable(cartesian_jog tools/cartesian_jog/cartesian_jog_node.cpp)
+target_compile_features(cartesian_jog PUBLIC cxx_std_17)
+target_link_libraries(cartesian_jog
   ${PROJECT_NAME}
+  kinematics_interface::kinematics_interface
+  pluginlib::pluginlib
   rclcpp::rclcpp
+  Eigen3::Eigen
+  ${geometry_msgs_TARGETS}
+  ${sensor_msgs_TARGETS}
 )
 
 install(
-  TARGETS kinematics_core_test
+  TARGETS cartesian_jog
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# six sliders for the twist on cmd_vel, the default input of cartesian_jog.launch.py
 install(
-  DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME}
+  PROGRAMS tools/cartesian_jog/cartesian_jog_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME cartesian_jog_gui
+)
+
+install(
+  FILES tools/cartesian_jog/cartesian_jog.launch.py
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 install(
@@ -85,7 +103,48 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
+  set(ament_cmake_uncrustify_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_index_cpp REQUIRED)
+
+  # URDF parsing, kinematics and conversions against independent references. The tests have their
+  # own main() (rclcpp::init), so the gtest main library is not linked.
+  ament_add_gtest(kinematics_core_test test/kinematics_core_test.cpp
+    SKIP_LINKING_MAIN_LIBRARIES)
+  target_include_directories(kinematics_core_test PRIVATE test)
+  target_link_libraries(kinematics_core_test
+    ${PROJECT_NAME}
+    ament_index_cpp::ament_index_cpp
+    rclcpp::rclcpp
+    urdf::urdf
+    Eigen3::Eigen
+  )
+
+  # joint limit policy of the jog tool (pure function, no ROS needed)
+  ament_add_gtest(joint_limiter_test tools/cartesian_jog/joint_limiter_test.cpp)
+  target_link_libraries(joint_limiter_test Eigen3::Eigen)
+
+  # Allocation check of the rt path. Eigen's malloc guard has to be compiled into the code under
+  # test, so KinematicsCore.cpp is compiled into this executable (instead of linking the library)
+  # with test/eigen_malloc_guard.hpp force-included.
+  ament_add_gtest(kinematics_core_malloc_test
+    test/kinematics_core_malloc_test.cpp
+    src/KinematicsCore.cpp
+    SKIP_LINKING_MAIN_LIBRARIES)
+  target_compile_options(kinematics_core_malloc_test PRIVATE
+    -include ${CMAKE_CURRENT_SOURCE_DIR}/test/eigen_malloc_guard.hpp)
+  target_include_directories(kinematics_core_malloc_test PRIVATE include test)
+  target_compile_features(kinematics_core_malloc_test PUBLIC cxx_std_17)
+  target_link_libraries(kinematics_core_malloc_test
+    kinematics_interface::kinematics_interface
+    pluginlib::pluginlib
+    ament_index_cpp::ament_index_cpp
+    rclcpp::rclcpp
+    urdf::urdf
+    Eigen3::Eigen
+  )
 endif()
 
 ament_package()

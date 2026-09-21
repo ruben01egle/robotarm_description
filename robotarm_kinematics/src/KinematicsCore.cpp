@@ -199,36 +199,12 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 		// store inv(T(theta=0)) to convert from dh cs-placement convention to urdf
 		joint.child_urdf_frame_in_child_dh_frame_ = dh_params_to_isometry(joint.dhparams_).inverse();
 
-		// get intertia
+		// check kinematic chain
         urdf::LinkConstSharedPtr child_link_urdf = model.getLink(joint_urdf->child_link_name);
 		if (!child_link_urdf) {
 			RCLCPP_ERROR(logger(), "Joint %s references unknown child link %s",
 				joint_urdf->name.c_str(), joint_urdf->child_link_name.c_str());
 			return false;
-		}
-		if (child_link_urdf->inertial) {
-			const auto & in = *child_link_urdf->inertial;
-
-			if (in.mass <= 0.0) {
-				RCLCPP_ERROR(logger(), "Link %s has invalid mass", child_link_urdf->name.c_str());
-				return false;
-			}
-
-			InertialParams p;
-			p.mass = in.mass;
-			p.com = Eigen::Vector3d(in.origin.position.x, in.origin.position.y, in.origin.position.z);
-
-			double com_roll, com_pitch, com_yaw;
-			in.origin.rotation.getRPY(com_roll, com_pitch, com_yaw);
-			p.com_rotation = (Eigen::AngleAxisd(com_yaw, Eigen::Vector3d::UnitZ()) *
-								Eigen::AngleAxisd(com_pitch, Eigen::Vector3d::UnitY()) *
-								Eigen::AngleAxisd(com_roll, Eigen::Vector3d::UnitX())).toRotationMatrix();
-
-			p.inertia << in.ixx, in.ixy, in.ixz,
-						in.ixy, in.iyy, in.iyz,
-						in.ixz, in.iyz, in.izz;
-			p.valid = true;
-			joint.child_link_inertial_ = p;
 		}
 
 		joints_.push_back(joint);
@@ -407,6 +383,69 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian_inverse(
     return true;
 }
 
+Eigen::Isometry3d robotarm_kinematics::KinematicsCore::dh_params_to_isometry(DHParams dhparams, double theta)
+{
+	Eigen::Isometry3d child_frame_in_parent_frame = Eigen::Isometry3d::Identity()
+												  * Eigen::AngleAxisd(dhparams.theta_0+theta, Eigen::Vector3d::UnitZ())
+												  * Eigen::Translation3d(0, 0, dhparams.d)
+												  * Eigen::Translation3d(dhparams.a, 0, 0)
+												  * Eigen::AngleAxisd(dhparams.alpha, Eigen::Vector3d::UnitX());
+    return child_frame_in_parent_frame;
+}
+
+bool robotarm_kinematics::KinematicsCore::get_joint_names(std::vector<std::string>& names)
+{
+    if (!initialised_) {
+		RCLCPP_ERROR(logger(), "Not initialised");
+		return false;
+	}
+	names.clear();
+	names.reserve(joints_.size());
+	for (const auto & j : joints_) {
+		names.push_back(j.joint_name_);
+	}
+    return true;
+}
+
+bool robotarm_kinematics::KinematicsCore::get_joint_limits(std::vector<Limits>& limits)
+{
+    if (!initialised_) {
+		RCLCPP_ERROR(logger(), "Not initialised");
+		return false;
+	}
+	limits.clear();
+	limits.reserve(joints_.size());
+	for (const auto & j : joints_) {
+		limits.push_back(j.limits_);
+	}
+    return true;
+}
+
+bool robotarm_kinematics::KinematicsCore::get_link_names(std::vector<std::string> &names)
+{
+    if (!initialised_) {
+		RCLCPP_ERROR(logger(), "Not initialised");
+		return false;
+	}
+	names.clear();
+	names.reserve(joints_.size()+1);
+	names.push_back(joints_.front().parent_link_name_);
+	for (const auto & j : joints_) {
+		names.push_back(j.child_link_name_);
+	}
+    return true;
+}
+
+bool robotarm_kinematics::KinematicsCore::get_tcp_link_name(std::string& name)
+{
+    if (!initialised_) {
+		RCLCPP_ERROR(logger(), "Not initialised");
+		return false;
+	}
+	name = tcp_link_name_;
+    return true;
+}
+
 void robotarm_kinematics::KinematicsCore::print_joints() const
 {
     constexpr double rad2deg = 180.0 / M_PI;
@@ -462,12 +501,4 @@ void robotarm_kinematics::KinematicsCore::print_joints() const
     RCLCPP_INFO(logger(), "%s", os.str().c_str());
 }
 
-Eigen::Isometry3d robotarm_kinematics::KinematicsCore::dh_params_to_isometry(DHParams dhparams, double theta)
-{
-	Eigen::Isometry3d child_frame_in_parent_frame = Eigen::Isometry3d::Identity()
-												  * Eigen::AngleAxisd(dhparams.theta_0+theta, Eigen::Vector3d::UnitZ())
-												  * Eigen::Translation3d(0, 0, dhparams.d)
-												  * Eigen::Translation3d(dhparams.a, 0, 0)
-												  * Eigen::AngleAxisd(dhparams.alpha, Eigen::Vector3d::UnitX());
-    return child_frame_in_parent_frame;
-}
+

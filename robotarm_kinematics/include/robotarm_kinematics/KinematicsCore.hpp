@@ -15,28 +15,22 @@ namespace robotarm_kinematics
 
 class KinematicsCore : public kinematics_interface::KinematicsInterface
 {
-protected:
+public:
     struct DHParams {
         double a = 0;
         double alpha = 0;
         double d = 0;
         double theta_0 = 0;
     };
+
     struct Limits {
         double effort = 0;
         double velocity = 0;
         double min = 0;
         double max = 0;
     };
-    struct InertialParams {
-        double mass = 0;
-        Eigen::Vector3d com = Eigen::Vector3d::Zero();
-        Eigen::Matrix3d inertia = Eigen::Matrix3d::Zero();
-        Eigen::Matrix3d com_rotation = Eigen::Matrix3d::Identity();
-        bool valid = false;
-    };
 
-
+protected:
     class Joint {
     public:
         std::string joint_name_;
@@ -45,7 +39,6 @@ protected:
         // i link
         std::string child_link_name_;
         Limits limits_;
-        InertialParams child_link_inertial_;
         DHParams dhparams_;
         Eigen::Isometry3d child_urdf_frame_in_child_dh_frame_ = Eigen::Isometry3d::Identity();
     };
@@ -94,9 +87,17 @@ public:
         Eigen::Matrix<double,
         Eigen::Dynamic, 6> &jacobian_inverse) override;
 
+    Eigen::Isometry3d dh_params_to_isometry(DHParams dhparams, double theta=0);
+
+    // Robot model, all return false before initialize(). Joints are in joint_pos order. Links are the
+    // root plus the child of each joint (joint i connects link i and i+1), the tcp is not included.
+    bool get_joint_names(std::vector<std::string>& names);
+    bool get_joint_limits(std::vector<Limits>& limits);
+    bool get_link_names(std::vector<std::string>& names);
+    bool get_tcp_link_name(std::string& name);
+
     // Logs every parsed joint (name, link names, DH params) as a table.
     void print_joints() const;
-    Eigen::Isometry3d dh_params_to_isometry(DHParams dhparams, double theta=0);
 
 protected:
     std::vector<Joint> joints_;

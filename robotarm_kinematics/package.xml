@@ -9,6 +9,8 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_index_cpp</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
@@ -16,11 +18,17 @@
   <depend>pluginlib</depend>
   <depend>kinematics_interface</depend>
   <depend>urdf</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>eigen</depend>
   <depend>eigen3_cmake_module</depend>
 
   <exec_depend>robotarm_description</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python_qt_binding</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
