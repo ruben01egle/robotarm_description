@@ -7,6 +7,27 @@ Denavit-Hartenberg (DH) parameters and is the base for forward kinematics and Ja
 Notation: `Rz(q)` / `Rx(q)` rotate about z / x, `Tz(d)` / `Tx(a)` translate along z / x.
 `X_in_Y` is the pose of frame X expressed in frame Y. Row `k` is joint `k` (`joints_[k-1]`).
 
+## Parameters (read once in `KinematicsCore::initialize`)
+
+| parameter                  | default | meaning                                                                      |
+|----------------------------|---------|------------------------------------------------------------------------------|
+| `<param_namespace>.lambda` | `0.01`  | damping of the damped least squares in `calculate_jacobian_inverse`, `>= 0`  |
+
+`<param_namespace>` is the argument of `initialize`; if it is empty the parameter is just `lambda`.
+A value that is negative, not finite or not a double makes `initialize` return `false`.
+
+## Caller contract of the kinematics functions
+
+- **Inputs are validated**: `joint_pos` (and `delta_theta`) need one entry per joint, and
+  `joint_pos`, `delta_x` and `delta_theta` must be finite. Otherwise the call logs a throttled
+  error, returns `false` and leaves the output untouched.
+- **Outputs are not size-checked**: dynamic-size outputs (`jacobian` 6xN, `jacobian_inverse` Nx6,
+  `delta_theta` N) are resized by Eigen if they do not fit. That allocates, so real-time callers
+  should pass pre-sized objects to keep the call allocation free.
+- The `std::vector` overloads of `kinematics_interface` copy their inputs into fresh Eigen objects
+  on every call and therefore allocate regardless. Real-time callers should use the `Eigen`
+  overloads with preallocated buffers.
+
 ## URDF constraints (checked in `KinematicsCore::initialize`)
 
 - Serial chain: every link has at most one child, and there are exactly 7 joints.
@@ -150,3 +171,41 @@ does not depend on the joint angles. Equivalent form: `URDF_link_k = DH_{k-1} ·
 | tcp                              | `DH_6` (the tcp joint origin is exactly the last DH offset)     |
 
 Correctness relies on the first origin being identity: it makes DH frame 0 equal to the root link frame.
+
+## Jacobian and its damped pseudo-inverse
+
+`calculate_jacobian` returns the geometric Jacobian `J` (6xN) of a link in the root link frame:
+column `i` is `(z_i × (p_end − p_i), z_i)`, with the joint axis `z_i` and position `p_i` of joint `i`.
+It maps joint velocities to a twist, `x_dot = J · q_dot` (rows 0-2 linear in m/s, rows 3-5 angular in rad/s).
+Joints behind the requested link get a zero column.
+
+`J` cannot simply be inverted: it is singular at kinematic singularities, where `J⁻¹` blows up and a
+tiny cartesian step would demand huge joint velocities. `calculate_jacobian_inverse` therefore returns
+the damped least squares pseudo-inverse `J⁺` (Nx6), which is used by
+`convert_cartesian_deltas_to_joint_deltas` as `delta_theta = J⁺ · delta_x`.
+
+`J⁺` comes from trading tracking error against joint motion:
+
+```
+min over q_dot:   ‖J q_dot − x_dot‖² + λ² ‖q_dot‖²
+```
+
+Setting the gradient to zero gives `(JᵀJ + λ²I) q_dot = Jᵀ x_dot`, so
+
+```
+J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ          <=>          (JᵀJ + λ²I) · J⁺ = Jᵀ
+```
+
+For `λ > 0` the matrix `M = JᵀJ + λ²I` (NxN) is symmetric positive definite, hence always invertible.
+It is not inverted explicitly: `M` is factored once with LDLT and the system `M · X = Jᵀ` is solved
+for `X = J⁺`. Equivalent form: `J⁺ = Jᵀ (J Jᵀ + λ²I)⁻¹`, which only needs a 6x6 matrix.
+
+With the SVD `J = U Σ Vᵀ` this is `J⁺ = Σ σᵢ / (σᵢ² + λ²) · vᵢ uᵢᵀ`. Directions with `σᵢ ≫ λ` are
+inverted as usual (`≈ 1/σᵢ`), directions with `σᵢ ≪ λ` are suppressed (`≈ σᵢ/λ²`), and the gain never
+exceeds `1/(2λ)`, which bounds the joint velocities near a singularity.
+
+- `λ` is the parameter `lambda` (default `0.01`). Larger is safer near singularities but less accurate:
+  `J · J⁺ ≠ I`, so `J · delta_theta` differs slightly from `delta_x`. In an iterative IK loop this
+  residual is corrected by the next iteration.
+- The damping is constant. Since the rows of `J` mix metres and radians, the same `λ` weighs the
+  position and orientation parts differently.

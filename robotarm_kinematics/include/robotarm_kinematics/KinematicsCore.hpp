@@ -51,6 +51,12 @@ protected:
     };
 
 public:
+    // Caller contract of the kinematics functions below:
+    //  - inputs (joint_pos, delta_x, delta_theta) must be finite, and joint_pos / delta_theta must have
+    //    one entry per joint, otherwise the call logs an error, returns false and leaves the output untouched.
+    //  - dynamic-size outputs (jacobian 6xN, jacobian_inverse Nx6, delta_theta N) are resized by Eigen
+    //    if they do not fit. That allocates, so rt callers should pass pre-sized objects to stay
+    //    allocation free (the std::vector overloads of the base class allocate regardless).
     KinematicsCore() = default;
     virtual ~KinematicsCore() = default;
 
@@ -97,17 +103,29 @@ protected:
     std::string tcp_link_name_;
 
 private:
+    // Common input validation of the kinematics functions: initialised, joint_pos has one entry
+    // per joint and is finite. Logs (throttled) and returns false if any of that is violated.
+    bool check_joint_pos(const Eigen::VectorXd &joint_pos);
+
     // true once initialize() has run through; every kinematics function refuses to work before that
     bool initialised_ = false;
 
     // steady clock for the throttled error logs in the rt path
     rclcpp::Clock clock_{RCL_STEADY_TIME};
 
-    // scratch buffer for calculate_jacobian(): the caller's jacobian is only written
-    // once the whole matrix is computed, so a failure leaves it untouched (all or nothing).
-    // Sized in initialize(), so calculate_jacobian() itself does not allocate.
+    // scratch buffers for the kinematics functions: results are built here and only copied
+    // to the caller's output once complete, so a failure leaves the output untouched
+    // (all or nothing). Sized in initialize(), so the rt path itself does not allocate.
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_cj_;
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_cji_;
+    Eigen::Matrix<double, 6, Eigen::Dynamic> j_jd2cd_;
+    Eigen::Matrix<double, Eigen::Dynamic, 6> j_inv_cd2jd_;
+    Eigen::MatrixXd M_;
+    Eigen::LDLT<Eigen::MatrixXd> ldlt_;
+
+    // damping factor of the damped least squares in calculate_jacobian_inverse(),
+    // read from the "<param_namespace>.lambda" parameter in initialize()
+    double lambda_ = 0.01;
 };
 
 }

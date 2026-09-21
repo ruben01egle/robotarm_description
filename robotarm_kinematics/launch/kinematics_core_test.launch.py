@@ -18,7 +18,11 @@ def generate_launch_description():
         package='robotarm_kinematics',
         executable='kinematics_core_test',
         output='screen',
-        parameters=[{'robot_description': robot_description}]
+        parameters=[{
+            'robot_description': robot_description,
+            # damping of the damped least squares in calculate_jacobian_inverse (default 0.01)
+            'lambda': 0.05,
+        }]
     )
 
     return LaunchDescription([

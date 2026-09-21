@@ -31,6 +31,22 @@ bool robotarm_kinematics::KinematicsCore::initialize(
     initialised_ = false;
     joints_.clear();
 
+    // Declared only if the host node has not already declared it (or auto-declared it from overrides).
+    const std::string lambda_param = (param_namespace.empty() ? "" : param_namespace + ".") + "lambda";
+    try {
+        if (!parameters_interface->has_parameter(lambda_param)) {
+            parameters_interface->declare_parameter(lambda_param, rclcpp::ParameterValue(0.01));
+        }
+        lambda_ = parameters_interface->get_parameter(lambda_param).as_double();
+    } catch (const std::exception & e) {
+        RCLCPP_ERROR(logger(), "Failed to read parameter '%s': %s", lambda_param.c_str(), e.what());
+        return false;
+    }
+    if (!std::isfinite(lambda_) || lambda_ < 0.0) {
+        RCLCPP_ERROR(logger(), "Parameter '%s' must be finite and >= 0", lambda_param.c_str());
+        return false;
+    }
+
     urdf::Model model;
     if (!model.initString(robot_description)) {
         RCLCPP_ERROR(logger(), "Failed to parse robot_description");
@@ -221,6 +237,10 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 	// init heap member
 	j_cj_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
 	j_cji_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
+	j_jd2cd_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
+	j_inv_cd2jd_ =  Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(joints_.size(), 6);
+	M_ = Eigen::MatrixXd::Zero(joints_.size(), joints_.size());
+	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(joints_.size());
 
     print_joints();
     initialised_ = true;
@@ -233,7 +253,17 @@ bool robotarm_kinematics::KinematicsCore::convert_cartesian_deltas_to_joint_delt
   	const std::string &link_name,
   	Eigen::VectorXd &delta_theta)
 {
-    return false;
+	if (!check_joint_pos(joint_pos)) return false;
+
+	if (!delta_x.allFinite()) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "delta_x contains NaN or inf");
+		return false;
+	}
+
+	// delta_theta = J⁺ delta_x
+	if (!calculate_jacobian_inverse(joint_pos, link_name, j_inv_cd2jd_)) return false;
+	delta_theta.noalias() = j_inv_cd2jd_ * delta_x;
+    return true;
 }
 
 bool robotarm_kinematics::KinematicsCore::convert_joint_deltas_to_cartesian_deltas(
@@ -242,7 +272,42 @@ bool robotarm_kinematics::KinematicsCore::convert_joint_deltas_to_cartesian_delt
   	const std::string &link_name,
   	Eigen::Matrix<double, 6, 1> &delta_x)
 {
-    return false;
+	// checks initialised_ first, which the size check of delta_theta below relies on
+	if (!check_joint_pos(joint_pos)) return false;
+
+	if (delta_theta.size() != static_cast<Eigen::Index>(joints_.size())) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Unexpected delta_theta dimension");
+		return false;
+	}
+	if (!delta_theta.allFinite()) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "delta_theta contains NaN or inf");
+		return false;
+	}
+
+	// delta_x = J delta_theta
+	if (!calculate_jacobian(joint_pos, link_name, j_jd2cd_)) return false;
+	delta_x.noalias() = j_jd2cd_ * delta_theta;
+    return true;
+}
+
+bool robotarm_kinematics::KinematicsCore::check_joint_pos(const Eigen::VectorXd &joint_pos)
+{
+	if (!initialised_) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Kinematics not initialised");
+		return false;
+	}
+
+	if (joint_pos.size() != static_cast<Eigen::Index>(joints_.size())) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Unexpected joint_pos dimension");
+		return false;
+	}
+
+	if (!joint_pos.allFinite()) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "joint_pos contains NaN or inf");
+		return false;
+	}
+
+	return true;
 }
 
 bool robotarm_kinematics::KinematicsCore::calculate_link_transform(
@@ -253,15 +318,7 @@ bool robotarm_kinematics::KinematicsCore::calculate_link_transform(
     // The DH chain starts in the root link's URDF frame only because initialize()
     // enforces an identity origin on the first joint (DH frame 0 == root link frame).
 
-	if (!initialised_) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Kinematics not initialised");
-		return false;
-	}
-
-	if (joint_pos.size() != static_cast<Eigen::Index>(joints_.size())) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Unexpected joint_pos dimension");
-		return false;
-	}
+	if (!check_joint_pos(joint_pos)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		transform = Eigen::Isometry3d::Identity();
@@ -293,15 +350,7 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian(
   	const std::string &link_name,
   	Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
 {
-	if (!initialised_) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Kinematics not initialised");
-		return false;
-	}
-
-	if (joint_pos.size() != static_cast<Eigen::Index>(joints_.size())) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Unexpected joint_pos dimension");
-		return false;
-	}
+	if (!check_joint_pos(joint_pos)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		jacobian.setZero(6, joints_.size());
@@ -337,8 +386,25 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian_inverse(
   	const std::string &link_name,
   	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
 {
+	// joint_pos is validated by calculate_jacobian(), which is the first thing called here
 	if (!calculate_jacobian(joint_pos, link_name, j_cji_)) return false;
-    return false;
+
+	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
+	// J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ -> (JᵀJ + λ²I)J⁺ = Jᵀ as MX = Jᵀ with:
+	// M = (JᵀJ + λ²I)
+	// X = J⁺
+	M_.noalias() = j_cji_.transpose() * j_cji_;
+	M_.diagonal().array() += lambda_*lambda_;
+
+	// factor M once, and check that it worked
+	ldlt_.compute(M_);
+	if (ldlt_.info() != Eigen::Success) {
+		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Factorization failed");
+		return false;
+	}
+	jacobian_inverse = ldlt_.solve(j_cji_.transpose());
+
+    return true;
 }
 
 void robotarm_kinematics::KinematicsCore::print_joints() const
