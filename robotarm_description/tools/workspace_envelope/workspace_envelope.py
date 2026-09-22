@@ -3,8 +3,14 @@
 
 Resolves the robot's xacro to a URDF, parses the joint chain, sweeps the
 reachable joint space, and computes forward kinematics for a chosen
-reference link (default: the wrist center at the intersection of axes
-4/5). Optionally renders the robot's STL meshes for scale/context.
+reference link (default: tcp). Optionally renders the robot's STL meshes
+for scale/context.
+
+Two styles (--style): "ours" fills in every point the reference link
+reaches over all joints that affect its position. "kuka" mimics a
+manufacturer manual's diagram: the side view only sweeps the joints that
+pitch in the arm's own vertical plane, the top view is just the outline
+swept by the base yaw joint at the resulting max reach.
 """
 
 import argparse
@@ -136,21 +142,21 @@ def axis_rotation_batch(axis, q):
     return T
 
 
-def fk_positions_batch(prefix, angles):
-    """prefix: joints base -> reference link's own parent joint (inclusive).
-    angles: (N, num_active) radians, one column per active joint, i.e. every
-    revolute joint in `prefix` except its own last entry (see `active_joints`
-    -- that last joint is inert for the tracked link's position and is always
-    treated as zero rotation here). Returns (N,3) world positions."""
+def fk_positions_batch(chain, reference_link, varying_joints, angles):
+    """Position of `reference_link` for N joint configurations. `varying_joints`
+    is the list of joint names that differ per sample, taken from `angles`
+    columns in that same order; every other joint up to `reference_link`
+    (including its own parent joint, which is inert for its own position
+    anyway) is held at zero. Returns (N,3) world positions."""
+    idx = next(i for i, j in enumerate(chain) if j.child == reference_link)
+    sub_chain = chain[:idx + 1]
     n = angles.shape[0]
     T = np.broadcast_to(np.eye(4), (n, 4, 4)).copy()
-    last_idx = len(prefix) - 1
-    revolute_i = 0
-    for i, j in enumerate(prefix):
+    col = {name: i for i, name in enumerate(varying_joints)}
+    for j in sub_chain:
         O = origin_matrix(j)
-        if j.joint_type == 'revolute' and i != last_idx:
-            R = axis_rotation_batch(j.axis, angles[:, revolute_i])
-            revolute_i += 1
+        if j.joint_type == 'revolute' and j.name in col:
+            R = axis_rotation_batch(j.axis, angles[:, col[j.name]])
         else:
             R = np.broadcast_to(np.eye(4), (n, 4, 4))
         T = T @ (O[None, :, :] @ R)
@@ -171,6 +177,35 @@ def fk_pose_single(chain, angle_by_joint):
         T = T @ O @ R
         poses[j.child] = T
     return poses
+
+
+def axis_world_direction(chain, joint_name):
+    """World-frame direction of a joint's own rotation axis, evaluated at the
+    all-zero configuration (i.e. composing only the fixed origin rotations of
+    every joint up to and including this one, not any joint's own rotation --
+    at q=0 that rotation is the identity anyway, so this is exactly the axis
+    direction a full FK at the zero pose would give)."""
+    R = np.eye(3)
+    for j in chain:
+        R = R @ rpy_to_R(j.rpy)
+        if j.name == joint_name:
+            return R @ j.axis
+    raise ValueError(f'unknown joint: {joint_name}')
+
+
+def classify_joints_by_axis(chain, world_direction, tol=0.01):
+    """Revolute joints (in chain order) whose world-frame axis (at the zero
+    pose) is parallel to `world_direction` (either sign)."""
+    d = np.asarray(world_direction) / np.linalg.norm(world_direction)
+    out = []
+    for j in chain:
+        if j.joint_type != 'revolute':
+            continue
+        a = axis_world_direction(chain, j.name)
+        a = a / np.linalg.norm(a)
+        if abs(abs(np.dot(a, d)) - 1.0) < tol:
+            out.append(j)
+    return out
 
 
 def sample_angles(joints, n, seed, mode):
@@ -200,11 +235,37 @@ def load_mesh_world(mesh_uri, T_link):
     return verts_world, np.asarray(mesh.faces)
 
 
-def plot_occupancy(ax, points2d, bins, color, alpha):
+def plot_filled(ax, points2d, bins, color, alpha):
     from matplotlib.colors import ListedColormap
     H, xedges, yedges = np.histogram2d(points2d[:, 0], points2d[:, 1], bins=bins)
     mask = np.where(H.T > 0, 1.0, np.nan)
     ax.pcolormesh(xedges, yedges, mask, cmap=ListedColormap([color]), alpha=alpha, shading='flat')
+
+
+def plot_outline_points(ax, points2d, bins, color, linewidth, min_per_bin=20):
+    """Boundary of a sampled point cloud's occupied region: bin it the same way
+    `plot_filled` does, then trace the 0/1 occupancy contour instead of filling
+    it. Handles concave shapes and interior holes (e.g. an unreachable gap
+    near the base) correctly, unlike a convex hull.
+
+    Unlike a filled plot -- which is visually forgiving of the odd empty bin
+    among filled neighbors -- a contour draws a little loop around every such
+    gap, and with `bins` as fine as the filled rendering uses, plain Poisson
+    sampling noise leaves plenty of interior bins empty by chance (e.g. ~11%
+    at mean 2.2 samples/bin) and the contour turns into a scribble. So the
+    bin count here is capped to whatever keeps the average occupied bin's
+    count comfortably away from zero, independent of the `bins` used for a
+    filled rendering of the same point count."""
+    n = points2d.shape[0]
+    eff_bins = max(10, min(bins, int(np.sqrt(n / min_per_bin))))
+    H, xedges, yedges = np.histogram2d(points2d[:, 0], points2d[:, 1], bins=eff_bins)
+    xc = 0.5 * (xedges[:-1] + xedges[1:])
+    yc = 0.5 * (yedges[:-1] + yedges[1:])
+    ax.contour(xc, yc, H.T, levels=[0.5], colors=color, linewidths=linewidth)
+
+
+def plot_outline_line(ax, outline_xy, color, linewidth):
+    ax.plot(outline_xy[:, 0], outline_xy[:, 1], color=color, linewidth=linewidth)
 
 
 def plot_mesh_silhouette(ax, verts2d, faces, color):
@@ -218,35 +279,60 @@ def plot_mesh_silhouette(ax, verts2d, faces, color):
                                       linewidth=0, antialiased=False))
 
 
-def make_figure(envelope_xyz, mesh_data_by_link, bins, output, dpi, show):
-    import matplotlib
-    if not show:
-        matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+def axis1_sweep_outline(max_r, yaw_joint, n=400):
+    """Boundary of the disk sector swept by rotating a point at radius `max_r`
+    through `yaw_joint`'s full angular range -- an outline (not filled), like
+    the manufacturer-manual top view: the outer arc plus the two straight
+    radial edges where the joint's limit cuts the circle off."""
+    theta = np.linspace(yaw_joint.lower, yaw_joint.upper, n)
+    arc_x = max_r * np.cos(theta)
+    arc_y = max_r * np.sin(theta)
+    x = np.concatenate([[0.0], arc_x, [0.0]])
+    y = np.concatenate([[0.0], arc_y, [0.0]])
+    return np.column_stack([x, y])
 
-    fig, (ax_side, ax_top) = plt.subplots(1, 2, figsize=(14, 7))
 
-    # True orthographic projections (drop one axis), not a radial fold: axis1's
-    # range is asymmetric-ish (+-175 deg, not a full 360 deg) and the arm/base
-    # meshes are not rotationally symmetric, so folding via r=hypot(x,y) would
-    # both hide the small un-reachable sector behind the robot and garble the
-    # mesh silhouette (points from either side of x=0 land on the same r).
-    plot_occupancy(ax_side, envelope_xyz[:, [0, 2]], bins, 'C0', 0.45)
-    plot_occupancy(ax_top, envelope_xyz[:, :2], bins, 'C0', 0.45)
+def render_panel(kind, ax_side, ax_top, data, mesh_data_by_link, bins):
+    if kind == 'ours':
+        plot_filled(ax_side, data['side_xyz'][:, [0, 2]], bins, 'C0', 0.45)
+        plot_filled(ax_top, data['top_xyz'][:, :2], bins, 'C0', 0.45)
+    else:
+        plot_outline_points(ax_side, data['side_xyz'][:, [0, 2]], bins, 'C0', 1.5)
+        plot_outline_line(ax_top, data['top_outline'], 'C0', 1.5)
 
     for verts, faces in mesh_data_by_link.values():
         plot_mesh_silhouette(ax_side, verts[:, [0, 2]], faces, '0.3')
         plot_mesh_silhouette(ax_top, verts[:, :2], faces, '0.3')
 
-    ax_side.set_xlabel('x [m]')
-    ax_side.set_ylabel('z [m]')
-    ax_side.set_aspect('equal')
-    ax_side.set_title('Side view (x-z)')
+    for ax, ylabel, title in ((ax_side, 'z [m]', 'Side view (x-z)'), (ax_top, 'y [m]', 'Top view (x-y)')):
+        ax.set_xlabel('x [m]')
+        ax.set_ylabel(ylabel)
+        # adjustable='datalim' (not the 'equal' default of 'box'): keep every
+        # subplot's box the same size as its grid cell and pad the data
+        # limits instead, so side/top panels render at the same height even
+        # though their data spans different x:y ratios.
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.set_title(title)
 
-    ax_top.set_xlabel('x [m]')
-    ax_top.set_ylabel('y [m]')
-    ax_top.set_aspect('equal')
-    ax_top.set_title('Top view (x-y)')
+
+def make_figure(style, ours, kuka, mesh_data_by_link, bins, output, dpi, show):
+    """`ours`: dict with 'side_xyz'/'top_xyz' point clouds, rendered filled.
+    `kuka`: dict with 'side_xyz' (point cloud, rendered as a traced outline)
+    and 'top_outline' (precomputed polyline), rendered as outlines. Either
+    may be None if that style wasn't requested."""
+    import matplotlib
+    if not show:
+        matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in (('ours', ours), ('kuka', kuka)) if style in (r[0], 'both')]
+    fig, axes = plt.subplots(len(rows), 2, figsize=(14, 7 * len(rows)), squeeze=False)
+
+    for (kind, data), (ax_side, ax_top) in zip(rows, axes):
+        render_panel(kind, ax_side, ax_top, data, mesh_data_by_link, bins)
+        suffix = 'all axes' if kind == 'ours' else 'axis2/3/5 side, axis1 sweep, outlines (KUKA style)'
+        ax_side.set_title(f'{ax_side.get_title()} -- {suffix}')
+        ax_top.set_title(f'{ax_top.get_title()} -- {suffix}')
 
     fig.tight_layout()
     fig.savefig(output, dpi=dpi)
@@ -258,9 +344,15 @@ def build_argparser():
     p = argparse.ArgumentParser(description='Reachable-workspace envelope: side/top silhouettes via FK sweep.')
     p.add_argument('--urdf', default=None,
                     help='path to robotarm.urdf.xacro (default: resolved via ament_index_python)')
-    p.add_argument('--reference-link', default='Stage5_1',
-                    help='link whose origin is swept (default: Stage5_1, the wrist center = '
-                         'intersection of axes 4/5). Use "tcp" for the tool center point.')
+    p.add_argument('--reference-link', default='tcp',
+                    help='link whose origin is swept (default: tcp). Use "Stage5_1" for the '
+                         'wrist center (intersection of axes 4/5) instead.')
+    p.add_argument('--style', choices=['ours', 'kuka', 'both'], default='ours',
+                    help='"ours": fill in every reachable point of the reference link over all '
+                         'relevant joints. "kuka": manufacturer-manual style -- side view swept '
+                         'over only the axes that pitch in the arm\'s own vertical plane (here '
+                         'axis2/3/5), top view is just the outline swept by the base yaw joint '
+                         '(axis1) at the resulting max reach. "both": render both, stacked.')
     p.add_argument('--samples', type=int, default=200_000)
     p.add_argument('--sampling', choices=['random', 'grid'], default='random')
     p.add_argument('--seed', type=int, default=0)
@@ -284,11 +376,10 @@ def main(argv=None):
     chain = build_chain(joints)
 
     prefix = joints_up_to_link(chain, args.reference_link)
-    swept = active_joints(prefix)
+    prefix_names = {j.name for j in prefix}
     if args.verbose:
         print(f'Chain: {[j.name for j in chain]}', file=sys.stderr)
         print(f'Reference link: {args.reference_link}', file=sys.stderr)
-        print(f'Active (sampled) joints: {[j.name for j in swept]} ({len(swept)})', file=sys.stderr)
 
     if args.verbose and prefix[-1].joint_type == 'revolute':
         # Sanity check: the reference link's own parent joint must be inert for its position.
@@ -301,10 +392,30 @@ def main(argv=None):
         print(f'Own-joint invariance check for {j.name}: max drift={max(drift):.2e} '
               f'({"OK" if ok else "FAILED"})', file=sys.stderr)
 
-    angles = sample_angles(swept, args.samples, args.seed, args.sampling)
-    if args.verbose:
-        print(f'Sampled {angles.shape[0]} configurations, computing FK...', file=sys.stderr)
-    envelope_xyz = fk_positions_batch(prefix, angles)
+    ours = kuka = None
+
+    if args.style in ('ours', 'both'):
+        swept = active_joints(prefix)
+        if args.verbose:
+            print(f'[ours] swept joints: {[j.name for j in swept]} ({len(swept)})', file=sys.stderr)
+        angles = sample_angles(swept, args.samples, args.seed, args.sampling)
+        xyz = fk_positions_batch(chain, args.reference_link, [j.name for j in swept], angles)
+        ours = {'side_xyz': xyz, 'top_xyz': xyz}
+
+    if args.style in ('kuka', 'both'):
+        pitch_joints = [j for j in classify_joints_by_axis(chain, (0.0, 1.0, 0.0)) if j.name in prefix_names]
+        yaw_joints = [j for j in classify_joints_by_axis(chain, (0.0, 0.0, 1.0)) if j.name in prefix_names]
+        if not yaw_joints:
+            sys.exit(f'--style kuka needs a base yaw joint (axis parallel to world Z) upstream of '
+                      f'{args.reference_link!r}, found none')
+        yaw_joint = yaw_joints[0]
+        if args.verbose:
+            print(f'[kuka] side-plane (pitch) joints: {[j.name for j in pitch_joints]}', file=sys.stderr)
+            print(f'[kuka] yaw joint: {yaw_joint.name}', file=sys.stderr)
+        side_angles = sample_angles(pitch_joints, args.samples, args.seed, args.sampling)
+        side_xyz = fk_positions_batch(chain, args.reference_link, [j.name for j in pitch_joints], side_angles)
+        max_r = float(np.max(np.hypot(side_xyz[:, 0], side_xyz[:, 1])))
+        kuka = {'side_xyz': side_xyz, 'top_outline': axis1_sweep_outline(max_r, yaw_joint)}
 
     mesh_data_by_link = {}
     if not args.no_mesh:
@@ -317,7 +428,7 @@ def main(argv=None):
                 print(f'Loading mesh for {link}: {uri}', file=sys.stderr)
             mesh_data_by_link[link] = load_mesh_world(uri, T_link)
 
-    make_figure(envelope_xyz, mesh_data_by_link, args.bins, args.output, args.dpi, args.show)
+    make_figure(args.style, ours, kuka, mesh_data_by_link, args.bins, args.output, args.dpi, args.show)
     if args.verbose:
         print(f'Wrote {args.output}', file=sys.stderr)
 

@@ -3,9 +3,30 @@
 Visualizes the robot's reachable workspace envelope (side view + top view),
 in the style of a manufacturer's working-envelope diagram: samples joint
 angles within the URDF's limits, computes forward kinematics for a chosen
-reference link (default: the wrist center at the intersection of axes 4/5),
-and plots the swept-out region. Optionally overlays the robot's STL meshes
-at the home pose for scale/context.
+reference link (default: `tcp`), and plots the swept-out region. Optionally
+overlays the robot's STL meshes at the home pose for scale/context.
+
+Two rendering styles (`--style`):
+- `ours` (default): fills in every point the reference link reaches over all
+  joints that affect its position -- a dense, Monte Carlo-sampled silhouette.
+- `kuka`: mimics a manufacturer manual's diagram -- outlines, not filled.
+  The side view only sweeps the joints that pitch within the arm's own
+  vertical plane (auto-detected: whichever revolute joints' rotation axis is
+  parallel to world Y at the zero pose -- axis2/3/5 on this robot), holding
+  the base yaw and any roll joints at zero, since panning the whole arm
+  around its yaw axis doesn't change that 2D profile; its outline is traced
+  from the same sampled point cloud `ours` fills in (so it can pick up real
+  concave detail, like a gap near the base the shoulder/elbow can't reach).
+  Tracing a contour off a sampled point cloud is noise-sensitive (an empty
+  bin among filled neighbors draws a little loop, unlike a filled plot which
+  just looks like a stray gap), so this outline is binned coarser than
+  `--bins` -- just fine enough to keep the average occupied bin's sample
+  count comfortably away from zero for the given `--samples`.
+  The top view is just the outline swept by the base yaw joint (axis1) at
+  the max radius found by the side sweep, i.e. a circle with a wedge missing
+  where the joint's limit cuts it off, matching e.g. a KUKA manual's
+  top-view drawing.
+- `both`: renders both, stacked in one figure.
 
 FK is computed independently in this script (standard URDF joint
 composition via numpy) rather than through `robotarm_kinematics`'s
@@ -29,11 +50,14 @@ source /opt/ros/jazzy/setup.bash
 source install/setup.bash   # from the workspace root; needed so xacro/ament_index_python can find robotarm_description
 
 python3 robotarm_description/tools/workspace_envelope/workspace_envelope.py
-# -> workspace_envelope.png
+# -> workspace_envelope.png (TCP envelope, "ours" style)
 
-# TCP envelope instead of the wrist center, more samples, no mesh:
+# KUKA-manual style instead, wrist center instead of TCP, no mesh:
 python3 robotarm_description/tools/workspace_envelope/workspace_envelope.py \
-    --reference-link tcp --samples 500000 --no-mesh --output tcp_envelope.png -v
+    --style kuka --reference-link Stage5_1 --no-mesh --output kuka_envelope.png -v
+
+# Both styles stacked in one figure:
+python3 robotarm_description/tools/workspace_envelope/workspace_envelope.py --style both
 ```
 
 Run with `--help` for the full list of options (reference link, sample
