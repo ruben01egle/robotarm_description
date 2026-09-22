@@ -18,7 +18,11 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-kinematics-interface \
     ros-${ROS_DISTRO}-eigen3-cmake-module \
     libeigen3-dev \
+    python3-matplotlib \
     && rm -rf /var/lib/apt/lists/*
+
+# trimesh has no apt package; pip is externally-managed in this image (PEP 668)
+RUN pip3 install --break-system-packages trimesh
 
 RUN rosdep init || true && rosdep update
 

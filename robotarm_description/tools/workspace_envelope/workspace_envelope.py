@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Visualize the robot's reachable workspace envelope (side + top view).
+
+Resolves the robot's xacro to a URDF, parses the joint chain, sweeps the
+reachable joint space, and computes forward kinematics for a chosen
+reference link (default: the wrist center at the intersection of axes
+4/5). Optionally renders the robot's STL meshes for scale/context.
+"""
+
+import argparse
+import sys
+from dataclasses import dataclass, field
+from xml.etree import ElementTree as ET
+
+import numpy as np
+
+
+@dataclass
+class Joint:
+    name: str
+    joint_type: str
+    parent: str
+    child: str
+    xyz: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    rpy: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    axis: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0]))
+    lower: float = 0.0
+    upper: float = 0.0
+
+
+def default_urdf_path() -> str:
+    from ament_index_python.packages import get_package_share_directory
+    return f"{get_package_share_directory('robotarm_description')}/urdf/robotarm.urdf.xacro"
+
+
+def load_urdf_root(xacro_path: str) -> ET.Element:
+    import xacro
+    doc = xacro.process_file(xacro_path)
+    return ET.fromstring(doc.toxml())
+
+
+def _vec3(s, default=(0.0, 0.0, 0.0)):
+    return np.array([float(v) for v in s.split()]) if s else np.array(default)
+
+
+def parse_joints_and_meshes(root):
+    joints = {}
+    for j in root.findall('joint'):
+        origin = j.find('origin')
+        axis_el = j.find('axis')
+        limit = j.find('limit')
+        joints[j.get('name')] = Joint(
+            name=j.get('name'),
+            joint_type=j.get('type'),
+            parent=j.find('parent').get('link'),
+            child=j.find('child').get('link'),
+            xyz=_vec3(origin.get('xyz') if origin is not None else None),
+            rpy=_vec3(origin.get('rpy') if origin is not None else None),
+            axis=_vec3(axis_el.get('xyz') if axis_el is not None else None, (1.0, 0.0, 0.0)),
+            lower=float(limit.get('lower')) if limit is not None and 'lower' in limit.attrib else 0.0,
+            upper=float(limit.get('upper')) if limit is not None and 'upper' in limit.attrib else 0.0,
+        )
+    meshes = {}
+    for link in root.findall('link'):
+        mesh_el = link.find('./visual/geometry/mesh')
+        meshes[link.get('name')] = mesh_el.get('filename') if mesh_el is not None else None
+    return joints, meshes
+
+
+def build_chain(joints):
+    """Order joints base -> tip, following the (assumed strictly serial) chain."""
+    children = {j.child for j in joints.values()}
+    parents = {j.parent for j in joints.values()}
+    root_link = next(link for link in parents if link not in children)
+    by_parent = {j.parent: j for j in joints.values()}
+    chain = []
+    link = root_link
+    while link in by_parent:
+        j = by_parent[link]
+        chain.append(j)
+        link = j.child
+    return chain
+
+
+def joints_up_to_link(chain, reference_link):
+    """Prefix of `chain` from the base up to and including the joint whose child
+    is `reference_link`. Including that last joint is harmless: a joint's own
+    rotation never moves its own child link's origin."""
+    idx = next(i for i, j in enumerate(chain) if j.child == reference_link)
+    return chain[:idx + 1]
+
+
+def active_joints(prefix):
+    """Revolute joints in `prefix` whose angle can move the final link's position
+    (i.e. every revolute joint except the prefix's own last entry, which is
+    inert for its own child's position)."""
+    return [j for j in prefix[:-1] if j.joint_type == 'revolute']
+
+
+def rpy_to_R(rpy):
+    r, p, y = rpy
+    cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
+    Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    return Rz @ Ry @ Rx
+
+
+def origin_matrix(j):
+    T = np.eye(4)
+    T[:3, :3] = rpy_to_R(j.rpy)
+    T[:3, 3] = j.xyz
+    return T
+
+
+def axis_rotation_batch(axis, q):
+    """Rodrigues formula, vectorized: (N,4,4) rotation matrices about `axis`
+    (unit 3-vector) for each angle in q (N,)."""
+    axis = axis / np.linalg.norm(axis)
+    n = q.shape[0]
+    c, s, t = np.cos(q), np.sin(q), 1 - np.cos(q)
+    x, y, z = axis
+    R = np.empty((n, 3, 3))
+    R[:, 0, 0] = t * x * x + c
+    R[:, 0, 1] = t * x * y - s * z
+    R[:, 0, 2] = t * x * z + s * y
+    R[:, 1, 0] = t * x * y + s * z
+    R[:, 1, 1] = t * y * y + c
+    R[:, 1, 2] = t * y * z - s * x
+    R[:, 2, 0] = t * x * z - s * y
+    R[:, 2, 1] = t * y * z + s * x
+    R[:, 2, 2] = t * z * z + c
+    T = np.zeros((n, 4, 4))
+    T[:, 3, 3] = 1.0
+    T[:, :3, :3] = R
+    return T
+
+
+def fk_positions_batch(prefix, angles):
+    """prefix: joints base -> reference link's own parent joint (inclusive).
+    angles: (N, num_active) radians, one column per active joint, i.e. every
+    revolute joint in `prefix` except its own last entry (see `active_joints`
+    -- that last joint is inert for the tracked link's position and is always
+    treated as zero rotation here). Returns (N,3) world positions."""
+    n = angles.shape[0]
+    T = np.broadcast_to(np.eye(4), (n, 4, 4)).copy()
+    last_idx = len(prefix) - 1
+    revolute_i = 0
+    for i, j in enumerate(prefix):
+        O = origin_matrix(j)
+        if j.joint_type == 'revolute' and i != last_idx:
+            R = axis_rotation_batch(j.axis, angles[:, revolute_i])
+            revolute_i += 1
+        else:
+            R = np.broadcast_to(np.eye(4), (n, 4, 4))
+        T = T @ (O[None, :, :] @ R)
+    return T[:, :3, 3]
+
+
+def fk_pose_single(chain, angle_by_joint):
+    """Full pose (4x4) of every link in `chain`, for one joint configuration
+    (dict joint_name -> angle, radians; missing/fixed joints default to 0)."""
+    poses = {}
+    T = np.eye(4)
+    for j in chain:
+        O = origin_matrix(j)
+        if j.joint_type == 'revolute':
+            R = axis_rotation_batch(j.axis, np.array([angle_by_joint.get(j.name, 0.0)]))[0]
+        else:
+            R = np.eye(4)
+        T = T @ O @ R
+        poses[j.child] = T
+    return poses
+
+
+def sample_angles(joints, n, seed, mode):
+    rng = np.random.default_rng(seed)
+    if mode == 'random':
+        return np.stack([rng.uniform(j.lower, j.upper, n) for j in joints], axis=1)
+    steps = max(2, round(n ** (1.0 / max(1, len(joints)))))
+    axes = [np.linspace(j.lower, j.upper, steps) for j in joints]
+    mesh = np.meshgrid(*axes, indexing='ij')
+    return np.stack([m.ravel() for m in mesh], axis=1)
+
+
+def resolve_package_uri(uri):
+    from ament_index_python.packages import get_package_share_directory
+    assert uri.startswith('package://'), f'unsupported mesh URI: {uri}'
+    pkg, rel = uri[len('package://'):].split('/', 1)
+    return f'{get_package_share_directory(pkg)}/{rel}'
+
+
+def load_mesh_world(mesh_uri, T_link):
+    """Returns (vertices_world (M,3), faces (F,3) triangle vertex indices)."""
+    import trimesh
+    path = resolve_package_uri(mesh_uri)
+    mesh = trimesh.load(path, force='mesh', process=False)
+    v = np.asarray(mesh.vertices)
+    verts_world = (T_link[:3, :3] @ v.T).T + T_link[:3, 3]
+    return verts_world, np.asarray(mesh.faces)
+
+
+def plot_occupancy(ax, points2d, bins, color, alpha):
+    from matplotlib.colors import ListedColormap
+    H, xedges, yedges = np.histogram2d(points2d[:, 0], points2d[:, 1], bins=bins)
+    mask = np.where(H.T > 0, 1.0, np.nan)
+    ax.pcolormesh(xedges, yedges, mask, cmap=ListedColormap([color]), alpha=alpha, shading='flat')
+
+
+def plot_mesh_silhouette(ax, verts2d, faces, color):
+    """Fills each mesh triangle's projected footprint, rather than plotting sparse
+    vertex points -- CAD meshes tessellate flat panels with very few large
+    triangles and curved/detailed regions with many small ones, so a
+    vertex-density-based occupancy grid leaves large flat panels looking empty."""
+    from matplotlib.collections import PolyCollection
+    tris = verts2d[faces]  # (F,3,2)
+    ax.add_collection(PolyCollection(tris, facecolor=color, edgecolor='none',
+                                      linewidth=0, antialiased=False))
+
+
+def make_figure(envelope_xyz, mesh_data_by_link, bins, output, dpi, show):
+    import matplotlib
+    if not show:
+        matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fig, (ax_side, ax_top) = plt.subplots(1, 2, figsize=(14, 7))
+
+    # True orthographic projections (drop one axis), not a radial fold: axis1's
+    # range is asymmetric-ish (+-175 deg, not a full 360 deg) and the arm/base
+    # meshes are not rotationally symmetric, so folding via r=hypot(x,y) would
+    # both hide the small un-reachable sector behind the robot and garble the
+    # mesh silhouette (points from either side of x=0 land on the same r).
+    plot_occupancy(ax_side, envelope_xyz[:, [0, 2]], bins, 'C0', 0.45)
+    plot_occupancy(ax_top, envelope_xyz[:, :2], bins, 'C0', 0.45)
+
+    for verts, faces in mesh_data_by_link.values():
+        plot_mesh_silhouette(ax_side, verts[:, [0, 2]], faces, '0.3')
+        plot_mesh_silhouette(ax_top, verts[:, :2], faces, '0.3')
+
+    ax_side.set_xlabel('x [m]')
+    ax_side.set_ylabel('z [m]')
+    ax_side.set_aspect('equal')
+    ax_side.set_title('Side view (x-z)')
+
+    ax_top.set_xlabel('x [m]')
+    ax_top.set_ylabel('y [m]')
+    ax_top.set_aspect('equal')
+    ax_top.set_title('Top view (x-y)')
+
+    fig.tight_layout()
+    fig.savefig(output, dpi=dpi)
+    if show:
+        plt.show()
+
+
+def build_argparser():
+    p = argparse.ArgumentParser(description='Reachable-workspace envelope: side/top silhouettes via FK sweep.')
+    p.add_argument('--urdf', default=None,
+                    help='path to robotarm.urdf.xacro (default: resolved via ament_index_python)')
+    p.add_argument('--reference-link', default='Stage5_1',
+                    help='link whose origin is swept (default: Stage5_1, the wrist center = '
+                         'intersection of axes 4/5). Use "tcp" for the tool center point.')
+    p.add_argument('--samples', type=int, default=200_000)
+    p.add_argument('--sampling', choices=['random', 'grid'], default='random')
+    p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--bins', type=int, default=300, help='occupancy-grid resolution per subplot')
+    p.add_argument('--no-mesh', action='store_true', help='skip mesh loading (no trimesh needed)')
+    p.add_argument('--output', default='workspace_envelope.png')
+    p.add_argument('--dpi', type=int, default=150)
+    p.add_argument('--show', action='store_true', help='also open an interactive window')
+    p.add_argument('-v', '--verbose', action='store_true')
+    return p
+
+
+def main(argv=None):
+    args = build_argparser().parse_args(argv)
+    urdf_path = args.urdf or default_urdf_path()
+
+    if args.verbose:
+        print(f'Loading URDF from {urdf_path}', file=sys.stderr)
+    root = load_urdf_root(urdf_path)
+    joints, meshes = parse_joints_and_meshes(root)
+    chain = build_chain(joints)
+
+    prefix = joints_up_to_link(chain, args.reference_link)
+    swept = active_joints(prefix)
+    if args.verbose:
+        print(f'Chain: {[j.name for j in chain]}', file=sys.stderr)
+        print(f'Reference link: {args.reference_link}', file=sys.stderr)
+        print(f'Active (sampled) joints: {[j.name for j in swept]} ({len(swept)})', file=sys.stderr)
+
+    if args.verbose and prefix[-1].joint_type == 'revolute':
+        # Sanity check: the reference link's own parent joint must be inert for its position.
+        j = prefix[-1]
+        rng = np.random.default_rng(0)
+        base_pos = fk_pose_single(chain, {})[args.reference_link][:3, 3]
+        drift = [np.linalg.norm(fk_pose_single(chain, {j.name: q})[args.reference_link][:3, 3] - base_pos)
+                 for q in rng.uniform(j.lower, j.upper, 3)]
+        ok = all(d < 1e-9 for d in drift)
+        print(f'Own-joint invariance check for {j.name}: max drift={max(drift):.2e} '
+              f'({"OK" if ok else "FAILED"})', file=sys.stderr)
+
+    angles = sample_angles(swept, args.samples, args.seed, args.sampling)
+    if args.verbose:
+        print(f'Sampled {angles.shape[0]} configurations, computing FK...', file=sys.stderr)
+    envelope_xyz = fk_positions_batch(prefix, angles)
+
+    mesh_data_by_link = {}
+    if not args.no_mesh:
+        home_poses = fk_pose_single(chain, {})
+        for link, uri in meshes.items():
+            if uri is None:
+                continue
+            T_link = home_poses.get(link, np.eye(4))
+            if args.verbose:
+                print(f'Loading mesh for {link}: {uri}', file=sys.stderr)
+            mesh_data_by_link[link] = load_mesh_world(uri, T_link)
+
+    make_figure(envelope_xyz, mesh_data_by_link, args.bins, args.output, args.dpi, args.show)
+    if args.verbose:
+        print(f'Wrote {args.output}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()
