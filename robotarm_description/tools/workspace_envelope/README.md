@@ -14,14 +14,17 @@ Two rendering styles (`--style`):
   vertical plane (auto-detected: whichever revolute joints' rotation axis is
   parallel to world Y at the zero pose -- axis2/3/5 on this robot), holding
   the base yaw and any roll joints at zero, since panning the whole arm
-  around its yaw axis doesn't change that 2D profile; its outline is traced
-  from the same sampled point cloud `ours` fills in (so it can pick up real
-  concave detail, like a gap near the base the shoulder/elbow can't reach).
-  Tracing a contour off a sampled point cloud is noise-sensitive (an empty
-  bin among filled neighbors draws a little loop, unlike a filled plot which
-  just looks like a stray gap), so this outline is binned coarser than
-  `--bins` -- just fine enough to keep the average occupied bin's sample
-  count comfortably away from zero for the given `--samples`.
+  around its yaw axis doesn't change that 2D profile. Its outline is not
+  traced from scattered samples (a contour of a sampled point cloud picks up
+  every by-chance empty bin as a hole, and FK stretches joint space so
+  unevenly that no single sample count/bin size works everywhere). Instead
+  those joints are swept on a regular grid (`--samples` total nodes), every
+  2D face of that joint-space grid is split into triangles, and the
+  triangles' FK images are filled into a raster (`--outline-resolution`
+  pixels). FK is continuous, so the union of those small triangles covers
+  the reachable region without gaps however much FK stretches it, and the
+  traced contour is clean -- while still picking up real concave detail and
+  holes, like the pocket near the shoulder the arm can't reach.
   The top view is just the outline swept by the base yaw joint (axis1) at
   the max radius found by the side sweep, i.e. a circle with a wedge missing
   where the joint's limit cuts it off, matching e.g. a KUKA manual's

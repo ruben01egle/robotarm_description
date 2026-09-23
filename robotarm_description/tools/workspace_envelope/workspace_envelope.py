@@ -242,26 +242,77 @@ def plot_filled(ax, points2d, bins, color, alpha):
     ax.pcolormesh(xedges, yedges, mask, cmap=ListedColormap([color]), alpha=alpha, shading='flat')
 
 
-def plot_outline_points(ax, points2d, bins, color, linewidth, min_per_bin=20):
-    """Boundary of a sampled point cloud's occupied region: bin it the same way
-    `plot_filled` does, then trace the 0/1 occupancy contour instead of filling
-    it. Handles concave shapes and interior holes (e.g. an unreachable gap
-    near the base) correctly, unlike a convex hull.
+def joint_grid_triangles(grid_points2d):
+    """Triangulate every 2D face of a regular joint-space grid, in image space.
 
-    Unlike a filled plot -- which is visually forgiving of the odd empty bin
-    among filled neighbors -- a contour draws a little loop around every such
-    gap, and with `bins` as fine as the filled rendering uses, plain Poisson
-    sampling noise leaves plenty of interior bins empty by chance (e.g. ~11%
-    at mean 2.2 samples/bin) and the contour turns into a scribble. So the
-    bin count here is capped to whatever keeps the average occupied bin's
-    count comfortably away from zero, independent of the `bins` used for a
-    filled rendering of the same point count."""
-    n = points2d.shape[0]
-    eff_bins = max(10, min(bins, int(np.sqrt(n / min_per_bin))))
-    H, xedges, yedges = np.histogram2d(points2d[:, 0], points2d[:, 1], bins=eff_bins)
-    xc = 0.5 * (xedges[:-1] + xedges[1:])
-    yc = 0.5 * (yedges[:-1] + yedges[1:])
-    ax.contour(xc, yc, H.T, levels=[0.5], colors=color, linewidths=linewidth)
+    `grid_points2d` has shape (s1, ..., sk, 2): the projected FK position for
+    each node of a k-dimensional joint-angle grid (k >= 2). For each pair of
+    joint axes, every grid face spanned by those two axes (the other joints
+    fixed at a grid value) is a quad in joint space, and is split into two
+    triangles; returns their images, (T,3,2).
+
+    FK is continuous, so each small joint-space triangle maps to (roughly) the
+    small image triangle spanned by its corners, and the union of all of them
+    covers the reachable region without gaps -- unlike scattered point
+    samples, whose coverage depends on how much FK stretches joint space
+    locally. Faces along every axis pair (not just the grid's outer boundary)
+    are needed because a boundary of the reachable region can also come from
+    a singular configuration inside the joint box (e.g. a fully stretched
+    elbow), not only from joint limits."""
+    k = grid_points2d.ndim - 1
+    tris = []
+    for a in range(k):
+        for b in range(a + 1, k):
+            P = np.moveaxis(grid_points2d, (a, b), (0, 1))
+            v00, v10 = P[:-1, :-1], P[1:, :-1]
+            v01, v11 = P[:-1, 1:], P[1:, 1:]
+            tris.append(np.stack([v00, v10, v11], axis=-2).reshape(-1, 3, 2))
+            tris.append(np.stack([v00, v11, v01], axis=-2).reshape(-1, 3, 2))
+    return np.concatenate(tris)
+
+
+def rasterize_triangles(tris, resolution, pad_px=3):
+    """Occupancy mask of the union of `tris` (T,3,2) on a square-pixel grid
+    whose longer side has `resolution` pixels, with `pad_px` empty pixels of
+    margin all around (so a contour of the mask always closes). Returns
+    (mask (H,W) bool, row 0 = lowest y; x pixel centers (W,); y pixel centers
+    (H,))."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.collections import PolyCollection
+    from matplotlib.figure import Figure
+
+    lo = tris.reshape(-1, 2).min(axis=0)
+    hi = tris.reshape(-1, 2).max(axis=0)
+    px = float(np.max(hi - lo)) / resolution
+    lo = lo - pad_px * px
+    hi = hi + pad_px * px
+    w, h = (int(np.ceil(v)) for v in (hi - lo) / px)
+    hi = lo + px * np.array([w, h])
+
+    dpi = 100
+    fig = Figure(figsize=(w / dpi, h / dpi), dpi=dpi)
+    canvas = FigureCanvasAgg(fig)
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set_axis_off()
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(lo[1], hi[1])
+    # A thin edge on each triangle so sliver triangles (near singularities,
+    # where FK folds the grid flat) still mark the pixels they cross.
+    ax.add_collection(PolyCollection(tris, facecolor='k', edgecolor='k',
+                                      linewidth=0.5 * 72 / dpi, antialiased=False))
+    canvas.draw()
+    img = np.asarray(canvas.buffer_rgba())[:, :, 0]
+    mask = np.flipud(img < 128)
+    xc = lo[0] + px * (np.arange(mask.shape[1]) + 0.5)
+    yc = lo[1] + px * (np.arange(mask.shape[0]) + 0.5)
+    return mask, xc, yc
+
+
+def plot_outline_mask(ax, outline_mask, color, linewidth):
+    """Boundary of a precomputed occupancy mask (see `rasterize_triangles`),
+    including interior holes (e.g. an unreachable gap near the base)."""
+    mask, xc, yc = outline_mask
+    ax.contour(xc, yc, mask.astype(float), levels=[0.5], colors=color, linewidths=linewidth)
 
 
 def plot_outline_line(ax, outline_xy, color, linewidth):
@@ -297,7 +348,7 @@ def render_panel(kind, ax_side, ax_top, data, mesh_data_by_link, bins):
         plot_filled(ax_side, data['side_xyz'][:, [0, 2]], bins, 'C0', 0.45)
         plot_filled(ax_top, data['top_xyz'][:, :2], bins, 'C0', 0.45)
     else:
-        plot_outline_points(ax_side, data['side_xyz'][:, [0, 2]], bins, 'C0', 1.5)
+        plot_outline_mask(ax_side, data['side_mask'], 'C0', 1.5)
         plot_outline_line(ax_top, data['top_outline'], 'C0', 1.5)
 
     for verts, faces in mesh_data_by_link.values():
@@ -317,7 +368,7 @@ def render_panel(kind, ax_side, ax_top, data, mesh_data_by_link, bins):
 
 def make_figure(style, ours, kuka, mesh_data_by_link, bins, output, dpi, show):
     """`ours`: dict with 'side_xyz'/'top_xyz' point clouds, rendered filled.
-    `kuka`: dict with 'side_xyz' (point cloud, rendered as a traced outline)
+    `kuka`: dict with 'side_mask' (occupancy mask from `rasterize_triangles`)
     and 'top_outline' (precomputed polyline), rendered as outlines. Either
     may be None if that style wasn't requested."""
     import matplotlib
@@ -357,7 +408,10 @@ def build_argparser():
     p.add_argument('--sampling', choices=['random', 'grid'], default='random')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--bins', type=int, default=300, help='occupancy-grid resolution per subplot')
-    p.add_argument('--no-mesh', action='store_true', help='skip mesh loading (no trimesh needed)')
+    p.add_argument('--outline-resolution', type=int, default=1200,
+                    help='kuka side view: pixels along the longer side of the raster the outline '
+                         'is traced from')
+    p.add_argument('--no-mesh',action='store_true', help='skip mesh loading (no trimesh needed)')
     p.add_argument('--output', default='workspace_envelope.png')
     p.add_argument('--dpi', type=int, default=150)
     p.add_argument('--show', action='store_true', help='also open an interactive window')
@@ -412,10 +466,20 @@ def main(argv=None):
         if args.verbose:
             print(f'[kuka] side-plane (pitch) joints: {[j.name for j in pitch_joints]}', file=sys.stderr)
             print(f'[kuka] yaw joint: {yaw_joint.name}', file=sys.stderr)
-        side_angles = sample_angles(pitch_joints, args.samples, args.seed, args.sampling)
+        if len(pitch_joints) < 2:
+            sys.exit(f'--style kuka needs at least two side-plane (pitch) joints upstream of '
+                      f'{args.reference_link!r} to sweep an area, found {len(pitch_joints)}')
+        # Always a regular grid here (not --sampling): the outline is built
+        # from the grid's faces, see joint_grid_triangles.
+        steps = max(2, round(args.samples ** (1.0 / len(pitch_joints))))
+        side_angles = sample_angles(pitch_joints, steps ** len(pitch_joints), args.seed, 'grid')
         side_xyz = fk_positions_batch(chain, args.reference_link, [j.name for j in pitch_joints], side_angles)
+        grid_xz = side_xyz[:, [0, 2]].reshape((steps,) * len(pitch_joints) + (2,))
+        side_mask = rasterize_triangles(joint_grid_triangles(grid_xz), args.outline_resolution)
+        if args.verbose:
+            print(f'[kuka] side grid: {steps} steps/joint, mask {side_mask[0].shape}', file=sys.stderr)
         max_r = float(np.max(np.hypot(side_xyz[:, 0], side_xyz[:, 1])))
-        kuka = {'side_xyz': side_xyz, 'top_outline': axis1_sweep_outline(max_r, yaw_joint)}
+        kuka = {'side_mask': side_mask, 'top_outline': axis1_sweep_outline(max_r, yaw_joint)}
 
     mesh_data_by_link = {}
     if not args.no_mesh:
