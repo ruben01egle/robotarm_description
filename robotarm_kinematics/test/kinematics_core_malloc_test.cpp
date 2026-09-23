@@ -100,7 +100,7 @@ TEST_F(MallocTest, TheGuardTripsWhenAnOutputHasToBeResized)
     // negative controls: an unsized output makes Eigen allocate, and the guard must notice
     const Eigen::VectorXd q = ref_->random_q(rng_);
     const Vector6 dx_in = test_utils::random_vector(rng_, 6, 1e-3);
-    const std::string tcp = core_.tcp_link_name_;
+    const std::string tcp = core_.tcp_.tcp_name_;
 
     Eigen::VectorXd dq_unsized;
     EXPECT_TRUE(allocates([&] {core_.convert_cartesian_deltas_to_joint_deltas(q, dx_in, tcp, dq_unsized);}));

@@ -16,13 +16,6 @@ namespace robotarm_kinematics
 class KinematicsCore : public kinematics_interface::KinematicsInterface
 {
 public:
-    struct DHParams {
-        double a = 0;
-        double alpha = 0;
-        double d = 0;
-        double theta_0 = 0;
-    };
-
     struct Limits {
         double effort = 0;
         double velocity = 0;
@@ -34,13 +27,24 @@ protected:
     class Joint {
     public:
         std::string joint_name_;
-        // i-1 link
         std::string parent_link_name_;
-        // i link
         std::string child_link_name_;
         Limits limits_;
-        DHParams dhparams_;
-        Eigen::Isometry3d child_urdf_frame_in_child_dh_frame_ = Eigen::Isometry3d::Identity();
+        // joint origin = link cs of child_link
+        Eigen::Isometry3d joint_origin_in_parent_ = Eigen::Isometry3d::Identity();
+        Eigen::Vector3d joint_axis_in_child_ = Eigen::Vector3d::Zero();
+
+    public:
+        Eigen::Isometry3d transform(double theta) const {
+            return joint_origin_in_parent_ * Eigen::AngleAxisd(theta, joint_axis_in_child_);
+        }
+    };
+
+    class TCP {
+    public:
+        std::string tcp_name_;
+        std::string parent_link_name_;
+        Eigen::Isometry3d tcp_origin_in_parent_ = Eigen::Isometry3d::Identity();
     };
 
 public:
@@ -87,7 +91,7 @@ public:
         Eigen::Matrix<double,
         Eigen::Dynamic, 6> &jacobian_inverse) override;
 
-    Eigen::Isometry3d dh_params_to_isometry(DHParams dhparams, double theta=0);
+    Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
 
     // Robot model, all return false before initialize(). Joints are in joint_pos order. Links are the
     // root plus the child of each joint (joint i connects link i and i+1), the tcp is not included.
@@ -96,12 +100,12 @@ public:
     bool get_link_names(std::vector<std::string>& names);
     bool get_tcp_link_name(std::string& name);
 
-    // Logs every parsed joint (name, link names, DH params) as a table.
+    // Logs the parsed chain (joint and link names, root -> tcp) as a table.
     void print_joints() const;
 
 protected:
     std::vector<Joint> joints_;
-    std::string tcp_link_name_;
+    TCP tcp_;
 
 private:
     // Common input validation of the kinematics functions: initialised, joint_pos has one entry

@@ -3,9 +3,12 @@
 
 // Helpers shared by the KinematicsCore tests:
 //  - TestableCore:  exposes the parsed chain of KinematicsCore
-//  - UrdfSpec:      builds a DH-conform URDF from a DH table, with knobs to break it on purpose
+//  - UrdfSpec:      builds a serial-chain URDF, with knobs to break it on purpose. Filled either
+//                   from a DH table (realistic arm geometry) or with random origins and axes
+//                   (make_random_spec, any number of joints, nothing DH-conform about it)
 //  - ReferenceFk:   forward kinematics computed straight from the URDF joint origins. It shares no
-//                   code with the DH machinery of the plugin, so it is an independent reference
+//                   code with the plugin (quaternion instead of RPY, Isometry::rotate), so it is an
+//                   independent reference
 //  - real_urdf():   the URDF of the real robot, processed by xacro
 
 #include <Eigen/Geometry>
@@ -36,7 +39,7 @@ class TestableCore : public robotarm_kinematics::KinematicsCore
 {
 public:
     using KinematicsCore::joints_;
-    using KinematicsCore::tcp_link_name_;
+    using KinematicsCore::tcp_;
 };
 
 // initialize() reads the "lambda" parameter, so it needs a node that carries the override
@@ -91,8 +94,8 @@ struct JointSpec
     double effort = 1.0;
 };
 
-// Joint i connects link i to link i + 1. Link 0 is "base", the last link is "tcp". The origin of
-// joint k + 1 encodes DH row k, the origin of the last joint (tcp) encodes the last row.
+// Joint i connects link i to link i + 1. Link 0 is "base", the last link is "tcp". The last joint
+// is the (fixed) tcp joint.
 struct UrdfSpec
 {
     std::vector<Origin> origins;
@@ -147,7 +150,8 @@ struct UrdfSpec
     }
 };
 
-// 6 revolute joints + fixed tcp joint, DH-conform, joint limits +-3 rad
+// 6 revolute joints + fixed tcp joint, joint limits +-3 rad. The origin of joint k + 1 encodes DH
+// row k, the origin of the last joint (tcp) encodes the last row.
 inline UrdfSpec make_spec(const std::vector<DhRow> & dh)
 {
     UrdfSpec s;
@@ -184,8 +188,43 @@ inline std::vector<DhRow> generic_dh()
         {0.02, 0.0, 0.1, -0.4}};
 }
 
+// dof revolute joints + fixed tcp joint with random origins and axes: first origin not identity,
+// rotations about all three axes, offsets in every direction, axes neither unit length nor along
+// z. Pitch stays within +-1.2 rad, away from the RPY singularity at +-pi/2. Deterministic per seed.
+inline UrdfSpec make_random_spec(size_t dof, unsigned seed)
+{
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> offset(-0.3, 0.3), angle(-M_PI, M_PI),
+        pitch(-1.2, 1.2), axis(-1.0, 1.0), scale(0.5, 2.0);
+    UrdfSpec s;
+    for (size_t i = 0; i <= dof; ++i) {
+        Origin o;
+        o.xyz = Eigen::Vector3d(offset(rng), offset(rng), offset(rng));
+        o.rpy = Eigen::Vector3d(angle(rng), pitch(rng), angle(rng));
+        s.origins.push_back(o);
+    }
+    s.joints.assign(dof + 1, JointSpec{});
+    for (size_t i = 0; i < dof; ++i) {
+        Eigen::Vector3d a(axis(rng), axis(rng), axis(rng));
+        s.joints[i].axis = scale(rng) * a.normalized();
+    }
+    s.joints.back().type = "fixed";
+    return s;
+}
+
+// URDF origin as an isometry, built independently of the plugin: Trans(xyz) * Rz(y) Ry(p) Rx(r)
+inline Eigen::Isometry3d isometry(const Origin & o)
+{
+    Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
+    T.translation() = o.xyz;
+    T.linear() = (Eigen::AngleAxisd(o.rpy.z(), Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(o.rpy.y(), Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(o.rpy.x(), Eigen::Vector3d::UnitX())).toRotationMatrix();
+    return T;
+}
+
 // ---------------------------------------------------------------------------------------------
-// reference forward kinematics: T_k = T_{k-1} * Origin_k * Rz(q_k), straight from the URDF
+// reference forward kinematics: T_k = T_{k-1} * Origin_k * R(axis_k, q_k), straight from the URDF
 // ---------------------------------------------------------------------------------------------
 
 class ReferenceFk
@@ -209,7 +248,8 @@ public:
             s.origin.linear() =
                 Eigen::Quaterniond(p.rotation.w, p.rotation.x, p.rotation.y, p.rotation.z)
                 .normalized().toRotationMatrix();
-            s.axis = Eigen::Vector3d(joint->axis.x, joint->axis.y, joint->axis.z);
+            // the URDF axis is a direction, its length carries no meaning
+            s.axis = Eigen::Vector3d(joint->axis.x, joint->axis.y, joint->axis.z).normalized();
             s.revolute = joint->type == urdf::Joint::REVOLUTE;
             s.child = joint->child_link_name;
             if (s.revolute) {

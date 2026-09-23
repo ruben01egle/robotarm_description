@@ -1,11 +1,13 @@
 # robotarm_kinematics
 
-`kinematics_interface` plugin for the 6-DOF robot arm. `KinematicsCore` parses the URDF into
-Denavit-Hartenberg (DH) parameters and is the base for forward kinematics and Jacobians.
-`Kinematics` derives from it and will add the geometric inverse kinematics (IK).
+`kinematics_interface` plugin for the 6-DOF robot arm. `KinematicsCore` takes the joint origins and
+axes straight from the URDF and is the base for forward kinematics and Jacobians. It works for any
+serial chain of revolute joints, not only for 6 of them. `Kinematics` derives from it and will add the
+geometric inverse kinematics (IK).
 
-Notation: `Rz(q)` / `Rx(q)` rotate about z / x, `Tz(d)` / `Tx(a)` translate along z / x.
-`X_in_Y` is the pose of frame X expressed in frame Y. Row `k` is joint `k` (`joints_[k-1]`).
+Notation: `R(a, q)` rotates by `q` about the unit axis `a`, `O_k` is the origin of joint `k`.
+`X_in_Y` is the pose of frame X expressed in frame Y. Joint `k` is `joints_[k-1]`, N is the number of
+revolute joints.
 
 ## Parameters (read once in `KinematicsCore::initialize`)
 
@@ -36,9 +38,9 @@ them during setup and not from the rt loop.
 
 | function                              | result                                                              |
 |---------------------------------------|---------------------------------------------------------------------|
-| `get_joint_names(std::vector<std::string> &)` | the 6 revolute joints in chain order                        |
+| `get_joint_names(std::vector<std::string> &)` | the N revolute joints in chain order                        |
 | `get_joint_limits(std::vector<Limits> &)`     | `min`, `max` [rad], `velocity` [rad/s], `effort` per joint, same order |
-| `get_link_names(std::vector<std::string> &)`  | the 7 links of the moving chain: the root link and the child link of every joint |
+| `get_link_names(std::vector<std::string> &)`  | the N+1 links of the moving chain: the root link and the child link of every joint |
 | `get_tcp_link_name(std::string &)`    | the child link of the last (fixed) joint                            |
 
 The order is the order of `joint_pos`: entry `i` is joint `i`, which connects link `i` and link `i+1`
@@ -47,153 +49,72 @@ for the kinematics functions like any link.
 
 ## URDF constraints (checked in `KinematicsCore::initialize`)
 
-- Serial chain: every link has at most one child, and there are exactly 7 joints.
-- Joints 1-6 are `revolute` with valid limits (`lower < upper`, `velocity > 0`, `effort > 0`).
-  The 7th (last) joint is `fixed` and its child is the tcp link. The tcp link may be empty
+- Serial chain: every link has at most one child. The chain has at least one revolute joint in front of
+  the tcp joint; there is no upper limit on the number of joints.
+- All joints but the last are `revolute` with valid limits (`lower < upper`, `velocity > 0`, `effort > 0`).
+  The last joint is `fixed` and its child is the tcp link. The tcp link may be empty
   (`<link name="tcp"/>`); it is only a frame.
-- Every revolute joint has `<axis xyz="0 0 1"/>`.
-- The origin of the first joint is identity, so the root link frame is DH frame 0.
-- Each joint origin (except the first) is DH-conform, see below.
+- Every revolute joint has a non-zero `<axis>`. Its length does not matter, it is normalised on parsing.
+- Joint origins are arbitrary: any translation and rotation, also for the first joint. (An earlier
+  version converted the URDF to DH parameters and therefore required axes along `+z`, an identity first
+  origin and DH-conform origins. None of that applies any more.)
 
 ## Additional constraints for the IK
 
-The closed-form IK needs a spherical wrist and a fixed arrangement of the other axes. They are
-conditions on the DH parameters (only the structure, the link lengths stay free):
+The closed-form IK needs 6 joints, a spherical wrist and a fixed arrangement of the other axes (only the
+structure, the link lengths stay free):
 
-| condition                                    | meaning                                  |
-|----------------------------------------------|------------------------------------------|
-| `alpha_1 = ±90°`                             | axis 1 perpendicular to axis 2           |
-| `alpha_2 = 0`                                | axes 2 and 3 parallel                    |
-| `alpha_3 = ±90°`                             | axis 3 perpendicular to axis 4           |
-| `a_4 = 0`, `alpha_4 = ±90°`                  | axes 4 and 5 intersect at a right angle  |
-| `a_5 = 0`, `alpha_5 = ±90°`                  | axes 5 and 6 intersect at a right angle  |
-| `d_5 = 0`                                    | axes 4, 5 and 6 meet in one point        |
+| condition                                     |
+|-----------------------------------------------|
+| axis 1 perpendicular to axis 2                |
+| axes 2 and 3 parallel                         |
+| axis 3 perpendicular to axis 4                |
+| axes 4 and 5 intersect at a right angle       |
+| axes 5 and 6 intersect at a right angle       |
+| axes 4, 5 and 6 meet in one point             |
 
-Axis 1 is the z axis of the root link (first origin is identity, axis is `0 0 1`). Whether that
-is vertical depends on how the base is mounted. To be enforced in `Kinematics::initialize`.
+To be enforced in `Kinematics::initialize`. The draft check in `src/Kinematics.cpp` (commented out) is
+still written against the old DH parameters and has to be rewritten in terms of the joint axes and
+origins, evaluated at `q = 0` in the root link frame.
 
-## How the DH parameters are derived from the URDF
+## Forward kinematics
 
-In a URDF the child link frame is the joint frame, and the joint rotates about its z axis by `q`:
-
-```
-URDF_link_k = O_1 Rz(q_1) · O_2 Rz(q_2) · ... · O_k Rz(q_k)
-```
-
-`O_j` is the origin of joint `j`, expressed in the frame of link `j-1` (`O_1 = I`).
-Standard DH describes the same chain as
+In a URDF the child link frame of a joint is the joint frame, and the joint rotates about its axis `a_k`
+(given in that frame) by `q_k`. Every joint therefore contributes the transform
 
 ```
-A_k(q) = Rz(q + theta_0) · Tz(d) · Tx(a) · Rx(alpha)      DH_k = A_1(q_1) · ... · A_k(q_k)
+A_k(q_k) = O_k · R(a_k, q_k)            (Joint::transform)
 ```
 
-In DH, frame `k` has its z axis along joint `k+1`, while the URDF frame of link `k` has its z axis
-along joint `k`. So the fixed part of row `k` comes from the origin of the **next** joint, `O_{k+1}`
-(the last row, joint 6, comes from the tcp joint). `O_{k+1}` is a fixed transform from the URDF
-frame of link `k` (call it `P`, z along joint `k`) to DH frame `k` (call it `C`, z along joint `k+1`).
-The task is to find `theta_0, d, a, alpha` such that `O_{k+1} = A_k(0)`.
-
-### 1. Write the DH transform as translation · rotation
-
-Moving the rotation to the right of the translations with `Rz(t) · Trans(v) = Trans(Rz(t) · v) · Rz(t)`:
+`O_k` (`joint_origin_in_parent_`) and the normalised `a_k` (`joint_axis_in_child_`) are read once in
+`initialize`. The pose of link `k` and of the tcp in the root link frame are then
 
 ```
-A_k(0) = Rz(theta_0) · Tz(d) · Tx(a) · Rx(alpha)
-       = Trans( a·cos(theta_0), a·sin(theta_0), d ) · Rz(theta_0) · Rx(alpha)
+link_k = A_1(q_1) · A_2(q_2) · ... · A_k(q_k)
+tcp    = link_N · O_tcp                 (O_tcp: origin of the fixed tcp joint, tcp_origin_in_parent_)
 ```
 
-### 2. Compare with the URDF origin
+| link_name                       | result of `calculate_link_transform` |
+|---------------------------------|--------------------------------------|
+| root link                       | identity                             |
+| child link of joint `k` (1..N)  | `link_k`                             |
+| tcp                             | `link_N · O_tcp`                     |
 
-A URDF origin with `xyz = p = (x, y, z)` and `rpy = (roll, pitch, yaw)` is
-
-```
-O = Trans(p) · R,      R = Rz(yaw) · Ry(pitch) · Rx(roll)
-```
-
-Rotation and translation of `O_{k+1} = A_k(0)` must match separately:
-
-```
-rotation:     Rz(yaw) · Ry(pitch) · Rx(roll)  =  Rz(theta_0) · Rx(alpha)
-translation:  (x, y, z)                       =  (a·cos(theta_0), a·sin(theta_0), d)
-```
-
-DH has 4 parameters, a general pose has 6, so an origin only fits if two conditions hold. Both are
-the usual DH rules for placing frame `C` relative to `P`, and both are checked in `initialize`:
-
-1. **No Ry factor: `pitch = 0`** ("invalid rotation"). The rotation side then reads
-   `Rz(yaw) · Rx(roll) = Rz(theta_0) · Rx(alpha)`, so `theta_0 = yaw` and `alpha = roll`.
-   Geometrically `x_C ⟂ z_P`: the x axis of `C` is `R · x_hat = Rz(yaw) · (cos p, 0, -sin p)`,
-   whose z component is `-sin(pitch)`.
-2. **The y component of `Rz(-yaw) · p` is zero** ("invalid translation"). This is the
-   translation side: `(x, y)` must point along `(cos theta_0, sin theta_0)`. Geometrically the
-   x axis of `C` intersects the z axis of `P`.
-
-### 3. Read off the parameters
-
-```
-theta_0 = yaw
-d       = z
-a       = p · (R · x_hat)              = x·cos(yaw) + y·sin(yaw)
-alpha   = atan2( (R^T z_hat)_y , (R^T z_hat)_z )                    (= roll)
-```
-
-- `a`: `R · x_hat = (cos theta_0, sin theta_0, 0)`, so the projection of `p` onto it gives back
-  exactly `a`. Any leftover perpendicular part would be the y component from condition 2.
-- `alpha`: `R^T · z_hat = Rx(-alpha) · z_hat = (0, sin alpha, cos alpha)`, so `atan2` of its y and z
-  components returns `alpha`. This is the angle between `z_P` and `z_C` seen in the y-z plane of `C`.
-  It equals `roll` once `pitch = 0`, but measuring it this way only needs the rotation matrix `R`.
-
-### 4. Why the yaw becomes a joint-angle offset
-
-Joint `k` rotates about the z axis of its own frame, and the leading `Rz(theta_0)` of `O_{k+1}` is a
-rotation about that same axis, right after the joint rotation. They combine to
-`Rz(q_k) · Rz(theta_0) = Rz(q_k + theta_0)`, which is why the DH joint variable is
-`theta_k = q_k + theta_0` and `A_k(q) = Rz(q) · A_k(0)`. At `q = 0` the row reproduces `O_{k+1}` exactly.
-
-### Example: `axis3` (row 3, `joints_[2]`)
-
-The next joint, `axis4`, has `xyz = (0, -0.015, 0)` and `rpy = (-pi/2, 0, -pi/2)`.
-
-```
-pitch = 0                                                                  -> condition 1 ok
-Rz(-yaw) · p = Rz(pi/2) · (0, -0.015, 0) = (0.015, 0, 0),  y = 0           -> condition 2 ok
-
-theta_0 = yaw = -pi/2
-d       = z   = 0
-a       = p · (cos(-pi/2), sin(-pi/2), 0) = (0, -0.015, 0) · (0, -1, 0) = 0.015
-alpha   = roll = -pi/2
-```
-
-This matches the row printed by `print_joints()` (`a = 0.015`, `alpha = -90 deg`, `d = 0`, `theta_0 = -90 deg`).
-
-## Why the inverse transform is needed to get the URDF frames
-
-`calculate_link_transform` must return the URDF frame of the requested link, expressed in the
-root link frame. The DH chain does not give that directly: DH frame `k` sits at the origin of the
-next joint, so
-
-```
-DH_k = URDF_link_k · A_k(0)         =>         URDF_link_k = DH_k · A_k(0)^-1
-```
-
-`A_k(0)^-1` is stored per joint as `child_urdf_frame_in_child_dh_frame_` (computed once in
-`initialize`). Both frames are fixed to the child link of joint `k`, which is why it is constant and
-does not depend on the joint angles. Equivalent form: `URDF_link_k = DH_{k-1} · Rz(q_k)`.
-
-| link_name                        | result                                                          |
-|----------------------------------|-----------------------------------------------------------------|
-| root link                        | identity                                                        |
-| child link of joint `k` (1..6)   | `DH_k · child_urdf_frame_in_child_dh_frame_` of joint `k`       |
-| tcp                              | `DH_6` (the tcp joint origin is exactly the last DH offset)     |
-
-Correctness relies on the first origin being identity: it makes DH frame 0 equal to the root link frame.
+The rotation `R(a_k, q_k)` is about an axis through the origin of frame `k`, so it does not move that
+origin: the position of joint `k` is the translation of `link_k`, whatever `q_k` is.
 
 ## Jacobian and its damped pseudo-inverse
 
 `calculate_jacobian` returns the geometric Jacobian `J` (6xN) of a link in the root link frame:
-column `i` is `(z_i × (p_end − p_i), z_i)`, with the joint axis `z_i` and position `p_i` of joint `i`.
+column `i` is `(w_i × (p_end − p_i), w_i)`, with the position `p_i` of joint `i` (translation of `link_i`)
+and its axis in the root link frame, `w_i = rot(link_i) · a_i`. Only for a URDF with every axis along
+`+z` is that the z column of `rot(link_i)`.
 It maps joint velocities to a twist, `x_dot = J · q_dot` (rows 0-2 linear in m/s, rows 3-5 angular in rad/s).
 Joints behind the requested link get a zero column.
+
+The chain is multiplied up once while the columns are filled, and `p_end` comes from one call to
+`calculate_link_transform` beforehand, so a Jacobian costs two passes over the chain (O(N)) instead of one
+transform per column (O(N²)).
 
 `J` cannot simply be inverted: it is singular at kinematic singularities, where `J⁻¹` blows up and a
 tiny cartesian step would demand huge joint velocities. `calculate_jacobian_inverse` therefore returns
@@ -309,14 +230,16 @@ also runnable directly from `build/robotarm_kinematics/` (with `--gtest_filter=.
 
 | executable                     | covers                                                                                  |
 |--------------------------------|-----------------------------------------------------------------------------------------|
-| `kinematics_core_test`         | URDF -> DH parsing, link transforms against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, `initialize()` rejecting every non-DH-conform / invalid URDF (one case per rule), delta conversions and input validation, round-trip accuracy of the damped inverse |
+| `kinematics_core_test`         | URDF parsing (origins, normalised axes, limits, chain length), link transforms against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule), delta conversions and input validation, round-trip accuracy of the damped inverse |
 | `kinematics_core_malloc_test`  | the rt path does not allocate with pre-sized outputs (Eigen's malloc guard), with negative controls so the guard cannot be silently off |
 | `joint_limiter_test`           | the joint limit policy of the jog tool (`tools/cartesian_jog/JointLimiter.hpp`): velocity and position limits, uniform scaling, joints at / beyond a limit, invalid input |
 
 The round-trip test asserts the exact bound of the damped inverse, `|J⁺J dq − dq| ≤ λ² / (σ_min² + λ²) · |dq|`
-(same for `J J⁺`), not an arbitrary tolerance. The tests run on the real robot and on synthetic
-URDFs generated from a DH table (`test/test_utils.hpp`), one with the DH table of the robot and one with
-arbitrary twists, offsets and negative lengths.
+(same for `J J⁺`), not an arbitrary tolerance. With fewer than 6 joints only the `dq` round trip is
+bounded, with more than 6 only the `dx` round trip. The tests run on the real robot and on synthetic
+URDFs (`test/test_utils.hpp`): two generated from a DH table (the one of the robot, and one with arbitrary
+twists, offsets and negative lengths) and random chains of 1, 3, 6 and 7 joints with arbitrary origins and
+oblique axes of any length.
 
 `kinematics_core_malloc_test` compiles `src/KinematicsCore.cpp` itself instead of linking the library,
 because Eigen's malloc guard has to be compiled into the code under test. `ament_uncrustify` is

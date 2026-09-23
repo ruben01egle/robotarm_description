@@ -76,75 +76,26 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 		}
 	}
 
-	if (joints_urdf.size() != 7) {
-		RCLCPP_ERROR(logger(), "URDF chain has %zu joint(s), expected 7 (6 dof + tcp)",
+	if (joints_urdf.size() < 2) {
+		RCLCPP_ERROR(logger(), "URDF chain has %zu joint(s), expected more",
 			joints_urdf.size());
 		return false;
 	}
 
-	// DH convention: base frame == world frame, so the first joint must not offset/rotate it.
-	const urdf::Pose & first_origin = joints_urdf[0]->parent_to_joint_origin_transform;
-	if (std::abs(first_origin.position.x) > linear_eps ||
-		std::abs(first_origin.position.y) > linear_eps ||
-		std::abs(first_origin.position.z) > linear_eps) {
-		RCLCPP_ERROR(logger(), "Joint %s not dh conform: first joint origin must have no translation",
-			joints_urdf[0]->name.c_str());
+	urdf::JointConstSharedPtr tcp_joint_urdf = joints_urdf.back();
+	if (tcp_joint_urdf->type != urdf::Joint::FIXED) {
+		RCLCPP_ERROR(logger(), "TCP-Joint %s has unexpected type", tcp_joint_urdf->name.c_str());
 		return false;
 	}
-	double first_roll, first_pitch, first_yaw;
-	first_origin.rotation.getRPY(first_roll, first_pitch, first_yaw);
-	if (std::abs(first_roll) > angular_eps ||
-		std::abs(first_pitch) > angular_eps ||
-		std::abs(first_yaw) > angular_eps) {
-		RCLCPP_ERROR(logger(), "Joint %s not dh conform: first joint origin must have no rotation",
-			joints_urdf[0]->name.c_str());
-		return false;
-	}
-
-	urdf::JointConstSharedPtr tcp_joint = joints_urdf.back();
-	if (tcp_joint->type != urdf::Joint::FIXED) {
-		RCLCPP_ERROR(logger(), "TCP-Joint %s has unexpected type", tcp_joint->name.c_str());
-		return false;
-	}
-	tcp_link_name_ = tcp_joint->child_link_name;
+	tcp_.tcp_name_ = tcp_joint_urdf->child_link_name;
+	tcp_.parent_link_name_ = tcp_joint_urdf->parent_link_name;
+	tcp_.tcp_origin_in_parent_ = joint_origin_to_isometry(tcp_joint_urdf);
 
     for (size_t i = 0; i < joints_urdf.size()-1; ++i) {
 		urdf::JointConstSharedPtr joint_urdf = joints_urdf[i];
-		urdf::JointConstSharedPtr next_joint_urdf = joints_urdf[i+1];
   
 		Joint joint;
-		if (joint_urdf->type == urdf::Joint::REVOLUTE) {
-			if (!joint_urdf->limits) {
-				RCLCPP_ERROR(logger(), "Joint %s has no limits", joint_urdf->name.c_str());
-				return false;
-			}
-			const auto & l = *joint_urdf->limits;
-
-			if (!(l.lower < l.upper)) {
-				RCLCPP_ERROR(logger(), "Joint %s has invalid position limits", joint_urdf->name.c_str());
-				return false;
-			}
-			if (l.velocity <= 0.0 || l.effort <= 0.0) {
-				RCLCPP_ERROR(logger(), "Joint %s has invalid velocity/effort limits", joint_urdf->name.c_str());
-				return false;
-			}
-
-			// DH joint rotates about +z of its own frame
-			const urdf::Vector3 & axis = joint_urdf->axis;
-			if (std::abs(axis.x) > angular_eps ||
-				std::abs(axis.y) > angular_eps ||
-				std::abs(axis.z - 1.0) > angular_eps) {
-				RCLCPP_ERROR(logger(), "Joint %s not dh conform: axis must be (0, 0, 1)",
-					joint_urdf->name.c_str());
-				return false;
-			}
-
-			joint.limits_.min = l.lower;
-			joint.limits_.max = l.upper;
-			joint.limits_.velocity = l.velocity;
-			joint.limits_.effort = l.effort;
-		}
-		else {
+		if (joint_urdf->type != urdf::Joint::REVOLUTE) {
 			RCLCPP_ERROR(logger(), "Joint %s has unexpected type", joint_urdf->name.c_str());
 			return false;
 		}
@@ -153,59 +104,38 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 		joint.parent_link_name_ = joint_urdf->parent_link_name;
 		joint.child_link_name_ = joint_urdf->child_link_name;
 
-		// extract dh params
-		double pitch, roll, yaw;
-		double x, y, z;
-		next_joint_urdf->parent_to_joint_origin_transform.rotation.getRPY(roll, pitch, yaw);
-		x = next_joint_urdf->parent_to_joint_origin_transform.position.x;
-		y = next_joint_urdf->parent_to_joint_origin_transform.position.y;
-		z = next_joint_urdf->parent_to_joint_origin_transform.position.z;
+		if (!joint_urdf->limits) {
+			RCLCPP_ERROR(logger(), "Joint %s has no limits", joint_urdf->name.c_str());
+			return false;
+		}
+		const auto & l = *joint_urdf->limits;
 
-		Eigen::Matrix3d Rot = (
-			Eigen::AngleAxisd(yaw,   Eigen::Vector3d::UnitZ()) *
-			Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) *
-			Eigen::AngleAxisd(roll,  Eigen::Vector3d::UnitX())).toRotationMatrix();
-
-		Eigen::Vector3d trans(x, y, z);
-
-		// check for invalid rotation around y
-		if (std::abs(pitch) > angular_eps) {
-			RCLCPP_ERROR(logger(), "Joint %s not dh conform: invalid rotation",
-				next_joint_urdf->name.c_str());
+		if (!(l.lower < l.upper)) {
+			RCLCPP_ERROR(logger(), "Joint %s has invalid position limits", joint_urdf->name.c_str());
+			return false;
+		}
+		if (l.velocity <= 0.0 || l.effort <= 0.0) {
+			RCLCPP_ERROR(logger(), "Joint %s has invalid velocity/effort limits", joint_urdf->name.c_str());
 			return false;
 		}
 
-		// check for invalid translation in y
-		Eigen::Vector3d trans_before_theta = Eigen::AngleAxisd(-yaw,  Eigen::Vector3d::UnitZ()).toRotationMatrix()
-											* trans;
-		if (std::abs(trans_before_theta[1]) > linear_eps) {
-			RCLCPP_ERROR(logger(), "Joint %s not dh conform: invalid translation",
-				next_joint_urdf->name.c_str());
+		joint.limits_.min = l.lower;
+		joint.limits_.max = l.upper;
+		joint.limits_.velocity = l.velocity;
+		joint.limits_.effort = l.effort;
+
+		// extract isometry
+		joint.joint_origin_in_parent_ = joint_origin_to_isometry(joint_urdf);
+
+		// axis
+		joint.joint_axis_in_child_ = Eigen::Vector3d(joint_urdf->axis.x,
+													 joint_urdf->axis.y,
+													 joint_urdf->axis.z);
+		if (joint.joint_axis_in_child_.isZero()) {
+			RCLCPP_ERROR(logger(), "Joint %s invalid axis (all zero)", joint_urdf->name.c_str());
 			return false;
 		}
-
-		// already given in parent cs -> i-1
-		joint.dhparams_.theta_0 = yaw;
-		joint.dhparams_.d = z;
-
-		// project trans onto child cs -> i
-		Eigen::Vector3d x_i_in_im1 = Rot*Eigen::Vector3d::UnitX();
-		joint.dhparams_.a = trans.dot(x_i_in_im1);
-
-		// angle between z_i-1 and z_i projected on 2d plane
-		Eigen::Vector3d z_im1_in_i = Rot.transpose()*Eigen::Vector3d::UnitZ();
-		joint.dhparams_.alpha = atan2(z_im1_in_i[1], z_im1_in_i[2]);
-
-		// store inv(T(theta=0)) to convert from dh cs-placement convention to urdf
-		joint.child_urdf_frame_in_child_dh_frame_ = dh_params_to_isometry(joint.dhparams_).inverse();
-
-		// check kinematic chain
-        urdf::LinkConstSharedPtr child_link_urdf = model.getLink(joint_urdf->child_link_name);
-		if (!child_link_urdf) {
-			RCLCPP_ERROR(logger(), "Joint %s references unknown child link %s",
-				joint_urdf->name.c_str(), joint_urdf->child_link_name.c_str());
-			return false;
-		}
+		joint.joint_axis_in_child_.normalize();
 
 		joints_.push_back(joint);
     }
@@ -291,9 +221,6 @@ bool robotarm_kinematics::KinematicsCore::calculate_link_transform(
   	const std::string &link_name,
   	Eigen::Isometry3d &transform)
 {
-    // The DH chain starts in the root link's URDF frame only because initialize()
-    // enforces an identity origin on the first joint (DH frame 0 == root link frame).
-
 	if (!check_joint_pos(joint_pos)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
@@ -303,22 +230,21 @@ bool robotarm_kinematics::KinematicsCore::calculate_link_transform(
 
 	Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
 	for (size_t i = 0; i < joints_.size(); ++i) {
-		T = T * dh_params_to_isometry(joints_[i].dhparams_, joint_pos[i]);
+		T = T * joints_[i].transform(joint_pos[i]);
 		if (joints_[i].child_link_name_ == link_name) {
-			transform = T * joints_[i].child_urdf_frame_in_child_dh_frame_;
+			transform = T;
 			return true;
 		}
 	}
 
-	if (link_name == tcp_link_name_) {  // TCP is not in joints_, so it comes after the loop
-		transform = T;
+	if (link_name == tcp_.tcp_name_) {  // TCP is not in joints_, so it comes after the loop
+		transform = T * tcp_.tcp_origin_in_parent_;
 		return true;
 	}
 
 	RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms,
 		"Link %s not found in kinematic chain", link_name.c_str());
 	return false;
-
 }
 
 bool robotarm_kinematics::KinematicsCore::calculate_jacobian(
@@ -338,15 +264,15 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian(
 	if (!calculate_link_transform(joint_pos, link_name, T_end)) return false;
 	Eigen::Vector3d p_end = T_end.translation();
 
+	Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
 	for (size_t i = 0; i < joints_.size(); ++i) {
 
-		Eigen::Isometry3d T_i;
-		if (!calculate_link_transform(joint_pos, joints_[i].child_link_name_, T_i)) return false;
-		Eigen::Vector3d z_axis = T_i.linear().col(2);
-		Eigen::Vector3d p_i = T_i.translation();
+		T = T * joints_[i].transform(joint_pos[i]);
+		Eigen::Vector3d joint_axis = T.linear() * joints_[i].joint_axis_in_child_;
+		Eigen::Vector3d p_i = T.translation();
 
-		j_cj_.block<3,1>(0, i) = z_axis.cross(p_end - p_i);
-    	j_cj_.block<3,1>(3, i) = z_axis;
+		j_cj_.block<3,1>(0, i) = joint_axis.cross(p_end - p_i);
+    	j_cj_.block<3,1>(3, i) = joint_axis;
 
 		if (joints_[i].child_link_name_ == link_name) {
 			break;
@@ -383,14 +309,21 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian_inverse(
     return true;
 }
 
-Eigen::Isometry3d robotarm_kinematics::KinematicsCore::dh_params_to_isometry(DHParams dhparams, double theta)
+Eigen::Isometry3d robotarm_kinematics::KinematicsCore::joint_origin_to_isometry(urdf::JointConstSharedPtr joint)
 {
-	Eigen::Isometry3d child_frame_in_parent_frame = Eigen::Isometry3d::Identity()
-												  * Eigen::AngleAxisd(dhparams.theta_0+theta, Eigen::Vector3d::UnitZ())
-												  * Eigen::Translation3d(0, 0, dhparams.d)
-												  * Eigen::Translation3d(dhparams.a, 0, 0)
-												  * Eigen::AngleAxisd(dhparams.alpha, Eigen::Vector3d::UnitX());
-    return child_frame_in_parent_frame;
+    const urdf::Pose & origin = joint->parent_to_joint_origin_transform;
+	double x, y, z;
+	x = origin.position.x;
+	y = origin.position.y;
+	z = origin.position.z;
+	double pitch, roll, yaw;
+	origin.rotation.getRPY(roll, pitch, yaw);
+	Eigen::Isometry3d T = Eigen::Isometry3d::Identity()
+						* Eigen::Translation3d(x, y, z)
+						* Eigen::AngleAxisd(yaw,   Eigen::Vector3d::UnitZ()) 
+						* Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) 
+						* Eigen::AngleAxisd(roll,  Eigen::Vector3d::UnitX());
+    return T;
 }
 
 bool robotarm_kinematics::KinematicsCore::get_joint_names(std::vector<std::string>& names)
@@ -442,61 +375,42 @@ bool robotarm_kinematics::KinematicsCore::get_tcp_link_name(std::string& name)
 		RCLCPP_ERROR(logger(), "Not initialised");
 		return false;
 	}
-	name = tcp_link_name_;
+	name = tcp_.tcp_name_;
     return true;
 }
 
 void robotarm_kinematics::KinematicsCore::print_joints() const
 {
-    constexpr double rad2deg = 180.0 / M_PI;
-
-    size_t w_joint = std::string("joint").size();
-    size_t w_parent = std::string("parent link").size();
-    size_t w_child = std::string("child link").size();
+    size_t w_joint = std::string("(fixed)").size();
+    size_t w_parent = std::max(std::string("parent link").size(), tcp_.parent_link_name_.size());
     for (const auto & j : joints_) {
         w_joint = std::max(w_joint, j.joint_name_.size());
         w_parent = std::max(w_parent, j.parent_link_name_.size());
-        w_child = std::max(w_child, j.child_link_name_.size());
     }
 
-    // one value column: fixed width, so columns line up
-    const int w_val = 11;
-    auto value = [&](std::ostringstream & os, double v) {
-        os << std::setw(w_val) << v << "  ";
+    auto row = [&](std::ostringstream & os, const std::string & idx, const std::string & joint,
+                   const std::string & parent, const std::string & child) {
+        os << std::left
+           << std::setw(3) << idx << "  "
+           << std::setw(static_cast<int>(w_joint)) << joint << "  "
+           << std::setw(static_cast<int>(w_parent)) << parent << "  "
+           << child;
     };
 
     std::ostringstream os;
-    os << std::fixed << std::setprecision(5);
-    os << "\nKinematic chain: " << joints_.size() << " joint(s)"
-       << "  (DH: a, d in m | alpha, theta_0 in deg)\n";
+    os << "\nKinematic chain: " << joints_.size() << " joint(s) + tcp\n";
 
     std::ostringstream header;
-    header << std::left
-           << std::setw(3) << "#" << "  "
-           << std::setw(static_cast<int>(w_joint)) << "joint" << "  "
-           << std::setw(static_cast<int>(w_parent)) << "parent link" << "  "
-           << std::setw(static_cast<int>(w_child)) << "child link" << "  "
-           << std::right
-           << std::setw(w_val) << "a" << "  "
-           << std::setw(w_val) << "alpha[deg]" << "  "
-           << std::setw(w_val) << "d" << "  "
-           << std::setw(w_val) << "theta0[deg]";
+    row(header, "#", "joint", "parent link", "child link");
     os << header.str() << "\n" << std::string(header.str().size(), '-') << "\n";
 
     for (size_t i = 0; i < joints_.size(); ++i) {
         const auto & j = joints_[i];
-        os << std::left
-           << std::setw(3) << i << "  "
-           << std::setw(static_cast<int>(w_joint)) << j.joint_name_ << "  "
-           << std::setw(static_cast<int>(w_parent)) << j.parent_link_name_ << "  "
-           << std::setw(static_cast<int>(w_child)) << j.child_link_name_ << "  "
-           << std::right;
-        value(os, j.dhparams_.a);
-        value(os, j.dhparams_.alpha * rad2deg);
-        value(os, j.dhparams_.d);
-        value(os, j.dhparams_.theta_0 * rad2deg);
+        row(os, std::to_string(i), j.joint_name_, j.parent_link_name_, j.child_link_name_);
         os << "\n";
     }
+    row(os, "tcp", "(fixed)", tcp_.parent_link_name_, tcp_.tcp_name_);
+    os << "\n";
 
     RCLCPP_INFO(logger(), "%s", os.str().c_str());
 }
