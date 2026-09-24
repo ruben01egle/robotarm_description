@@ -17,6 +17,7 @@
       <joint name="axis1">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
+        <command_interface name="torque_ff"/>
         <command_interface name="effort"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
@@ -27,6 +28,7 @@
       <joint name="axis2">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
+        <command_interface name="torque_ff"/>
         <command_interface name="effort"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
@@ -37,6 +39,7 @@
       <joint name="axis3">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
+        <command_interface name="torque_ff"/>
         <command_interface name="effort"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
@@ -47,6 +50,7 @@
       <joint name="axis4">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
+        <command_interface name="torque_ff"/>
         <command_interface name="effort"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
@@ -57,6 +61,7 @@
       <joint name="axis5">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
+        <command_interface name="torque_ff"/>
         <command_interface name="effort"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
@@ -67,6 +72,7 @@
       <joint name="axis6">
         <command_interface name="position"/>
         <command_interface name="velocity"/>
+        <command_interface name="torque_ff"/>
         <command_interface name="effort"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
