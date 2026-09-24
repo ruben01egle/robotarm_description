@@ -1,1 +1,1 @@
-onshape-robotics-toolkit @ git+https://github.com/ruben01egle/onshape-robotics-toolkit.git@main
+onshape-robotics-toolkit[collision] @ git+https://github.com/ruben01egle/onshape-robotics-toolkit.git@main

@@ -1,0 +1,156 @@
+{
+  "Base_1": {
+    "key": "e77c714d4fcd5eaffa4b723ef8a1c95c9159ec74ec9697cff34e506b82b99938",
+    "visual_size": 4999984,
+    "collision": [
+      "Base_1_collision_0.stl",
+      "Base_1_collision_1.stl",
+      "Base_1_collision_2.stl",
+      "Base_1_collision_3.stl",
+      "Base_1_collision_4.stl",
+      "Base_1_collision_5.stl",
+      "Base_1_collision_6.stl",
+      "Base_1_collision_7.stl",
+      "Base_1_collision_8.stl",
+      "Base_1_collision_9.stl",
+      "Base_1_collision_10.stl",
+      "Base_1_collision_11.stl",
+      "Base_1_collision_12.stl",
+      "Base_1_collision_13.stl",
+      "Base_1_collision_14.stl",
+      "Base_1_collision_15.stl"
+    ]
+  },
+  "Shoulder_1": {
+    "key": "e8a9772500b938eb5c94f7c79c35e7d431490a4db96ebfe587051873093ba95e",
+    "visual_size": 4999984,
+    "collision": [
+      "Shoulder_1_collision_0.stl",
+      "Shoulder_1_collision_1.stl",
+      "Shoulder_1_collision_2.stl",
+      "Shoulder_1_collision_3.stl",
+      "Shoulder_1_collision_4.stl",
+      "Shoulder_1_collision_5.stl",
+      "Shoulder_1_collision_6.stl",
+      "Shoulder_1_collision_7.stl",
+      "Shoulder_1_collision_8.stl",
+      "Shoulder_1_collision_9.stl",
+      "Shoulder_1_collision_10.stl",
+      "Shoulder_1_collision_11.stl",
+      "Shoulder_1_collision_12.stl",
+      "Shoulder_1_collision_13.stl",
+      "Shoulder_1_collision_14.stl",
+      "Shoulder_1_collision_15.stl"
+    ]
+  },
+  "Elbow_1": {
+    "key": "b18bd843609b1aa8ba8decf7e90ec54d297aff1d504d1c577576c401099d6051",
+    "visual_size": 4999984,
+    "collision": [
+      "Elbow_1_collision_0.stl",
+      "Elbow_1_collision_1.stl",
+      "Elbow_1_collision_2.stl",
+      "Elbow_1_collision_3.stl",
+      "Elbow_1_collision_4.stl",
+      "Elbow_1_collision_5.stl",
+      "Elbow_1_collision_6.stl",
+      "Elbow_1_collision_7.stl",
+      "Elbow_1_collision_8.stl",
+      "Elbow_1_collision_9.stl",
+      "Elbow_1_collision_10.stl",
+      "Elbow_1_collision_11.stl",
+      "Elbow_1_collision_12.stl",
+      "Elbow_1_collision_13.stl",
+      "Elbow_1_collision_14.stl",
+      "Elbow_1_collision_15.stl"
+    ]
+  },
+  "Forearm_1": {
+    "key": "7f476c548f94454ca34428674a5791680a331b5b1aa72ab66dc7854f66517430",
+    "visual_size": 5000084,
+    "collision": [
+      "Forearm_1_collision_0.stl",
+      "Forearm_1_collision_1.stl",
+      "Forearm_1_collision_2.stl",
+      "Forearm_1_collision_3.stl",
+      "Forearm_1_collision_4.stl",
+      "Forearm_1_collision_5.stl",
+      "Forearm_1_collision_6.stl",
+      "Forearm_1_collision_7.stl",
+      "Forearm_1_collision_8.stl",
+      "Forearm_1_collision_9.stl",
+      "Forearm_1_collision_10.stl",
+      "Forearm_1_collision_11.stl",
+      "Forearm_1_collision_12.stl",
+      "Forearm_1_collision_13.stl",
+      "Forearm_1_collision_14.stl",
+      "Forearm_1_collision_15.stl"
+    ]
+  },
+  "Stage4_1": {
+    "key": "f2e94078d7108e7eb053dbacc821df7113432127918ec86457d8ceee386c81de",
+    "visual_size": 4999984,
+    "collision": [
+      "Stage4_1_collision_0.stl",
+      "Stage4_1_collision_1.stl",
+      "Stage4_1_collision_2.stl",
+      "Stage4_1_collision_3.stl",
+      "Stage4_1_collision_4.stl",
+      "Stage4_1_collision_5.stl",
+      "Stage4_1_collision_6.stl",
+      "Stage4_1_collision_7.stl",
+      "Stage4_1_collision_8.stl",
+      "Stage4_1_collision_9.stl",
+      "Stage4_1_collision_10.stl",
+      "Stage4_1_collision_11.stl",
+      "Stage4_1_collision_12.stl",
+      "Stage4_1_collision_13.stl",
+      "Stage4_1_collision_14.stl",
+      "Stage4_1_collision_15.stl"
+    ]
+  },
+  "Stage5_1": {
+    "key": "028175d4ea6da03048259220a6852054d240c4899eee56f4d541fdcf4b79697a",
+    "visual_size": 1629284,
+    "collision": [
+      "Stage5_1_collision_0.stl",
+      "Stage5_1_collision_1.stl",
+      "Stage5_1_collision_2.stl",
+      "Stage5_1_collision_3.stl",
+      "Stage5_1_collision_4.stl",
+      "Stage5_1_collision_5.stl",
+      "Stage5_1_collision_6.stl",
+      "Stage5_1_collision_7.stl",
+      "Stage5_1_collision_8.stl",
+      "Stage5_1_collision_9.stl",
+      "Stage5_1_collision_10.stl",
+      "Stage5_1_collision_11.stl",
+      "Stage5_1_collision_12.stl",
+      "Stage5_1_collision_13.stl",
+      "Stage5_1_collision_14.stl",
+      "Stage5_1_collision_15.stl"
+    ]
+  },
+  "Stage6_1": {
+    "key": "34d1d6680cb1c9756f2e3edb249f16c528e84e61fb7ddf32ce4c6aa28893e150",
+    "visual_size": 1206984,
+    "collision": [
+      "Stage6_1_collision_0.stl",
+      "Stage6_1_collision_1.stl",
+      "Stage6_1_collision_2.stl",
+      "Stage6_1_collision_3.stl",
+      "Stage6_1_collision_4.stl",
+      "Stage6_1_collision_5.stl",
+      "Stage6_1_collision_6.stl",
+      "Stage6_1_collision_7.stl",
+      "Stage6_1_collision_8.stl",
+      "Stage6_1_collision_9.stl",
+      "Stage6_1_collision_10.stl",
+      "Stage6_1_collision_11.stl",
+      "Stage6_1_collision_12.stl",
+      "Stage6_1_collision_13.stl",
+      "Stage6_1_collision_14.stl",
+      "Stage6_1_collision_15.stl"
+    ]
+  }
+}

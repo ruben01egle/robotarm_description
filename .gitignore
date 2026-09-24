@@ -15,3 +15,4 @@ robotarm.log
 ORT.yaml
 ORT.log
 .env*
+*.log

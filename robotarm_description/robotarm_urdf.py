@@ -5,6 +5,7 @@ from onshape_robotics_toolkit.graph import KinematicGraph
 from onshape_robotics_toolkit.parse import CAD
 from onshape_robotics_toolkit.robot import Robot
 from onshape_robotics_toolkit.utilities import setup_default_logging
+from onshape_robotics_toolkit.mesh import MeshOptions
 
 DOCUMENT_URL = "https://cad.onshape.com/documents/cd1ea15e5c158db2ad62771b/w/ca3c8c5dbd7650aa0ac06273/e/69821d80e21d0a495c75f831"
 
@@ -36,7 +37,17 @@ cad = CAD.from_url(DOCUMENT_URL, client=client, max_depth=0)
 graph = KinematicGraph.from_cad(cad, root_mate_name=ROOT_MATE_NAME)
 robot = Robot.from_graph(kinematic_graph=graph, client=client, name="robotarm", fetch_mass_properties=True)
 
-URDFSerializer().save(robot, URDF_PATH, download_assets=True, mesh_dir=MESH_DIR)
+URDFSerializer().save(robot,
+                      URDF_PATH,
+                      download_assets=True,
+                      mesh_dir=MESH_DIR,
+                      mesh_options=MeshOptions(
+                        visual_max_faces=100_000,                # decimate visuals; None = keep full resolution
+                        collision_mode="convex_decomposition",   # "convex_hull" | "convex_decomposition" | "mesh"
+                        collision_max_hulls=16,                  # convex pieces per link (decomposition only)
+                        collision_hull_max_vertices=64,          # vertices per convex piece
+                        collision_concavity=0.05,                # lower = tighter fit, more pieces
+                      ))
 
 convert_urdf_to_xacro(
     URDF_PATH,
