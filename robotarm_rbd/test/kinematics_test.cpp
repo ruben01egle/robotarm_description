@@ -1,4 +1,4 @@
-// Tests for KinematicsCore, in order of importance:
+// Tests for Kinematics, in order of importance:
 //   1. URDF parsing: joint origins, axes and limits, and every link transform against an
 //      independent reference FK built from the URDF itself (real robot + synthetic robots of
 //      different lengths, DH-like and random geometry)
@@ -6,7 +6,7 @@
 //   3. Jacobian against finite differences of the reference FK
 //   4. delta conversions: consistency with FK, round-trip accuracy of the damped inverse,
 //      behaviour at a singularity, input validation
-// The allocation check lives in kinematics_core_malloc_test.cpp (it needs a special build).
+// The allocation check lives in kinematics_malloc_test.cpp (it needs a special build).
 
 #include <gtest/gtest.h>
 
@@ -28,7 +28,7 @@ namespace
 using test_utils::Jacobian;
 using test_utils::JacobianInverse;
 using test_utils::Vector6;
-using test_utils::TestableCore;
+using test_utils::TestableKinematics;
 using test_utils::UrdfSpec;
 
 // Plugin and reference use the same URDF numbers, they only differ in floating point noise
@@ -58,7 +58,7 @@ std::string urdf_for(const std::string & robot)
 
 // every link transform at q against the reference FK
 void expect_fk_matches_reference(
-    TestableCore & core, const test_utils::ReferenceFk & ref, const Eigen::VectorXd & q)
+    TestableKinematics & core, const test_utils::ReferenceFk & ref, const Eigen::VectorXd & q)
 {
     for (const std::string & link : ref.link_names()) {
         SCOPED_TRACE("link " + link);
@@ -74,7 +74,7 @@ void expect_fk_matches_reference(
 // link, whose Jacobian is zero, and links in the middle of the chain, whose later columns must be
 // zero). Linear rows: d position / dq_i. Angular rows: rotation vector of R(q + h) R(q - h)^T / 2h.
 void expect_jacobian_matches_reference(
-    TestableCore & core, const test_utils::ReferenceFk & ref, const Eigen::VectorXd & q)
+    TestableKinematics & core, const test_utils::ReferenceFk & ref, const Eigen::VectorXd & q)
 {
     const double h = 1e-6;
     const Eigen::Index n = q.size();
@@ -122,7 +122,7 @@ protected:
     Eigen::VectorXd random_q() {return ref_->random_q(rng_);}
     Eigen::Index n() const {return static_cast<Eigen::Index>(ref_->dof());}
 
-    TestableCore core_;
+    TestableKinematics core_;
     std::string urdf_;
     std::unique_ptr<test_utils::ReferenceFk> ref_;
     std::mt19937 rng_;
@@ -197,7 +197,7 @@ TEST_P(RobotTest, JacobianMatchesFiniteDifferencesOfTheReferenceFk)
 
 TEST_P(RobotTest, JointDeltasToCartesianAreTheJacobianProductAndFollowTheFkToFirstOrder)
 {
-    const std::string tcp = core_.tcp_.tcp_name_;
+    const std::string tcp = test_utils::tcp_name(core_);
     for (int k = 0; k < 20; ++k) {
         const Eigen::VectorXd q = random_q();
         const Eigen::VectorXd dq = test_utils::random_vector(rng_, n(), 1e-6);
@@ -231,7 +231,7 @@ TEST_P(RobotTest, RoundTripErrorStaysWithinTheDampingBound)
     // with more than 6, J has a null space that dq -> dx loses, so only dx -> dq -> dx is.
     const bool check_joint_round_trip = n() <= 6;
     const bool check_cartesian_round_trip = n() >= 6;
-    const std::string tcp = core_.tcp_.tcp_name_;
+    const std::string tcp = test_utils::tcp_name(core_);
     for (const double lambda : {1e-6, 1e-2, 5e-2}) {
         SCOPED_TRACE("lambda = " + std::to_string(lambda));
         ASSERT_TRUE(test_utils::initialize(core_, urdf_, test_utils::lambda_param(lambda)));
@@ -285,7 +285,7 @@ TEST_P(RobotTest, RoundTripErrorStaysWithinTheDampingBound)
 
 TEST_P(RobotTest, InvalidInputsFailAndLeaveOutputsUntouched)
 {
-    const std::string tcp = core_.tcp_.tcp_name_;
+    const std::string tcp = test_utils::tcp_name(core_);
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
 
@@ -351,7 +351,7 @@ TEST_P(RobotTest, InvalidInputsFailAndLeaveOutputsUntouched)
 
 TEST_P(RobotTest, UnsizedOutputsAreResizedAndGiveTheSameResultAsPresizedOnes)
 {
-    const std::string tcp = core_.tcp_.tcp_name_;
+    const std::string tcp = test_utils::tcp_name(core_);
     const Eigen::VectorXd q = random_q();
     const Vector6 dx = test_utils::random_vector(rng_, 6, 1e-3);
 
@@ -382,7 +382,7 @@ TEST_P(RobotTest, UnsizedOutputsAreResizedAndGiveTheSameResultAsPresizedOnes)
 TEST(Singularity, DampingKeepsTheJointDeltasBoundedAtTheWristSingularity)
 {
     const double lambda = 1e-2;
-    TestableCore core;
+    TestableKinematics core;
     ASSERT_TRUE(test_utils::initialize(core, urdf_for("baseline"), test_utils::lambda_param(lambda)));
 
     Eigen::VectorXd q(6);
@@ -423,8 +423,8 @@ TEST(Initialize, RealUrdfIsParsedIntoSixJointsAndTheTcp)
     } catch (const std::exception & e) {
         FAIL() << e.what();
     }
-    TestableCore core;
-    ASSERT_TRUE(test_utils::initialize(core, urdf));
+    test_utils::TestableRbd core;
+    ASSERT_TRUE(core.initialize(urdf, {})) << core.last_error();
 
     ASSERT_EQ(core.joints_.size(), 6u);
     EXPECT_EQ(core.tcp_.tcp_name_, "tcp");
@@ -442,7 +442,7 @@ TEST(Initialize, RealUrdfIsParsedIntoSixJointsAndTheTcp)
     }
 
     std::vector<std::string> names;
-    std::vector<robotarm_kinematics::KinematicsCore::Limits> limits;
+    std::vector<robotarm_rbd::Kinematics::Limits> limits;
     std::string tcp;
     ASSERT_TRUE(core.get_joint_names(names));
     ASSERT_TRUE(core.get_joint_limits(limits));
@@ -470,8 +470,8 @@ TEST(Initialize, OriginsAxesAndLimitsAreParsedFromTheUrdf)
         spec.joints[0].effort = 5.0;
         const size_t dof = spec.joints.size() - 1;
 
-        TestableCore core;
-        ASSERT_TRUE(test_utils::initialize(core, spec.str()));
+        test_utils::TestableRbd core;
+        ASSERT_TRUE(core.initialize(spec.str(), {})) << core.last_error();
         ASSERT_EQ(core.joints_.size(), dof);
         for (size_t i = 0; i < dof; ++i) {
             SCOPED_TRACE("joint " + std::to_string(i));
@@ -495,7 +495,7 @@ TEST(Initialize, OriginsAxesAndLimitsAreParsedFromTheUrdf)
 
         // the getters hand out the same, one entry per joint in chain order
         std::vector<std::string> names, links;
-        std::vector<robotarm_kinematics::KinematicsCore::Limits> limits;
+        std::vector<robotarm_rbd::Kinematics::Limits> limits;
         std::string tcp;
         ASSERT_TRUE(core.get_joint_names(names));
         ASSERT_TRUE(core.get_joint_limits(limits));
@@ -523,8 +523,8 @@ TEST(Initialize, TheNumberOfJointsFollowsTheUrdf)
 {
     for (const size_t dof : {1u, 2u, 5u, 8u, 12u}) {
         SCOPED_TRACE("dof = " + std::to_string(dof));
-        TestableCore core;
-        ASSERT_TRUE(test_utils::initialize(core, test_utils::make_random_spec(dof, 7).str()));
+        test_utils::TestableRbd core;
+        ASSERT_TRUE(core.initialize(test_utils::make_random_spec(dof, 7).str(), {})) << core.last_error();
         EXPECT_EQ(core.joints_.size(), dof);
         Eigen::Isometry3d T;
         EXPECT_TRUE(core.calculate_link_transform(Eigen::VectorXd::Zero(dof), "tcp", T));
@@ -534,9 +534,9 @@ TEST(Initialize, TheNumberOfJointsFollowsTheUrdf)
 
 TEST(Initialize, RobotModelGettersFailBeforeInitializeAndLeaveTheOutputUntouched)
 {
-    TestableCore core;
+    TestableKinematics core;
     std::vector<std::string> names{"keep"};
-    std::vector<robotarm_kinematics::KinematicsCore::Limits> limits(2);
+    std::vector<robotarm_rbd::Kinematics::Limits> limits(2);
     std::string tcp = "keep";
     EXPECT_FALSE(core.get_joint_names(names));
     EXPECT_FALSE(core.get_joint_limits(limits));
@@ -551,7 +551,7 @@ TEST(Initialize, LambdaIsReadFromTheParameter)
     // the values accepted by the check ">= 0 and finite"; the rejected ones are in InvalidUrdfTest
     const std::string urdf = urdf_for("baseline");
     for (const double lambda : {0.0, 1e-6, 0.5}) {
-        TestableCore core;
+        TestableKinematics core;
         EXPECT_TRUE(test_utils::initialize(core, urdf, test_utils::lambda_param(lambda))) << lambda;
     }
 }
@@ -562,7 +562,7 @@ TEST(Initialize, LambdaIsReadFromTheParameter)
 
 TEST(Lifecycle, EveryFunctionRefusesBeforeInitialize)
 {
-    TestableCore core;
+    TestableKinematics core;
     const Eigen::VectorXd q = Eigen::VectorXd::Zero(6);
     Eigen::Isometry3d T;
     Jacobian J;
@@ -582,7 +582,7 @@ TEST(Lifecycle, AFailedInitializeLeavesTheObjectUnusableAndAValidOneRevivesIt)
     const Eigen::VectorXd q = Eigen::VectorXd::Zero(6);
     Eigen::Isometry3d T;
 
-    TestableCore core;
+    TestableKinematics core;
     ASSERT_TRUE(test_utils::initialize(core, valid));
     EXPECT_TRUE(core.calculate_link_transform(q, "tcp", T));
 
@@ -636,7 +636,7 @@ TEST_P(NonDhGeometryTest, IsAcceptedAndMatchesTheReference)
     const std::string urdf = spec.str();
     ASSERT_NE(urdf, test_utils::make_spec(test_utils::robot_dh()).str()) << "the case changes nothing";
 
-    TestableCore core;
+    TestableKinematics core;
     ASSERT_TRUE(test_utils::initialize(core, urdf));
     const test_utils::ReferenceFk ref(urdf);
     std::mt19937 rng(99);
@@ -725,7 +725,7 @@ class InvalidUrdfTest : public ::testing::TestWithParam<InvalidCase> {};
 
 TEST(InvalidUrdf, AcceptsTheUnmodifiedUrdfTheCasesAreDerivedFrom)
 {
-    TestableCore core;
+    TestableKinematics core;
     EXPECT_TRUE(test_utils::initialize(core, test_utils::make_spec(test_utils::robot_dh()).str()));
 }
 
@@ -744,7 +744,7 @@ TEST_P(InvalidUrdfTest, InitializeReturnsFalseAndTheObjectStaysUnusable)
         EXPECT_NE(urdf, valid) << "the case does not change the URDF, it tests nothing";
     }
 
-    TestableCore core;
+    TestableKinematics core;
     EXPECT_FALSE(test_utils::initialize(core, urdf, c.params));
     Eigen::Isometry3d T;
     EXPECT_FALSE(core.calculate_link_transform(Eigen::VectorXd::Zero(6), "tcp", T));

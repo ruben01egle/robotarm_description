@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(robotarm_kinematics)
+project(robotarm_rbd)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -14,9 +14,24 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(urdfdom REQUIRED)
+
+# ROS free rigid body model (RobotarmRbd): URDF parsing via urdfdom and the calculations, Eigen only.
+# Kept as its own library so nothing from rclcpp can slip in unnoticed.
+add_library(${PROJECT_NAME}_core SHARED
+  src/RobotarmRbd.cpp
+)
+target_compile_features(${PROJECT_NAME}_core PUBLIC cxx_std_17)
+target_include_directories(${PROJECT_NAME}_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(${PROJECT_NAME}_core
+  urdfdom::urdfdom_model
+  Eigen3::Eigen
+)
 
 add_library(${PROJECT_NAME} SHARED
-  src/KinematicsCore.cpp
   src/Kinematics.cpp
 )
 
@@ -29,6 +44,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 target_link_libraries(${PROJECT_NAME}
+  ${PROJECT_NAME}_core
   kinematics_interface::kinematics_interface
   pluginlib::pluginlib
   rclcpp::rclcpp
@@ -40,7 +56,7 @@ pluginlib_export_plugin_description_file(kinematics_interface kinematics_plugins
 
 # Tools, not part of the library: Cartesian jogging (twists on cmd_vel -> /joint_states), see
 # tools/cartesian_jog/ and its launch file. The kinematics plugin is loaded through pluginlib; the
-# library is linked only to reach the robot model getters of KinematicsCore (joint names, limits, tcp).
+# library is linked only to reach the robot model getters of Kinematics (joint names, limits, tcp).
 # Nothing under tools/ is installed as a header.
 add_executable(cartesian_jog tools/cartesian_jog/cartesian_jog_node.cpp)
 target_compile_features(cartesian_jog PUBLIC cxx_std_17)
@@ -72,7 +88,7 @@ install(
 )
 
 install(
-  TARGETS ${PROJECT_NAME}
+  TARGETS ${PROJECT_NAME}_core ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -95,6 +111,7 @@ ament_export_dependencies(
   pluginlib
   rclcpp
   urdf
+  urdfdom
   eigen3_cmake_module
   Eigen3
 )
@@ -111,10 +128,10 @@ if(BUILD_TESTING)
 
   # URDF parsing, kinematics and conversions against independent references. The tests have their
   # own main() (rclcpp::init), so the gtest main library is not linked.
-  ament_add_gtest(kinematics_core_test test/kinematics_core_test.cpp
+  ament_add_gtest(kinematics_test test/kinematics_test.cpp
     SKIP_LINKING_MAIN_LIBRARIES)
-  target_include_directories(kinematics_core_test PRIVATE test)
-  target_link_libraries(kinematics_core_test
+  target_include_directories(kinematics_test PRIVATE test)
+  target_link_libraries(kinematics_test
     ${PROJECT_NAME}
     ament_index_cpp::ament_index_cpp
     rclcpp::rclcpp
@@ -122,22 +139,29 @@ if(BUILD_TESTING)
     Eigen3::Eigen
   )
 
+  # RobotarmRbd, linked without rclcpp so the test fails to link if the library depends on ROS
+  ament_add_gtest(robotarm_rbd_test test/robotarm_rbd_test.cpp)
+  target_include_directories(robotarm_rbd_test PRIVATE test)
+  target_link_libraries(robotarm_rbd_test ${PROJECT_NAME}_core)
+
   # joint limit policy of the jog tool (pure function, no ROS needed)
   ament_add_gtest(joint_limiter_test tools/cartesian_jog/joint_limiter_test.cpp)
   target_link_libraries(joint_limiter_test Eigen3::Eigen)
 
   # Allocation check of the rt path. Eigen's malloc guard has to be compiled into the code under
-  # test, so KinematicsCore.cpp is compiled into this executable (instead of linking the library)
-  # with test/eigen_malloc_guard.hpp force-included.
-  ament_add_gtest(kinematics_core_malloc_test
-    test/kinematics_core_malloc_test.cpp
-    src/KinematicsCore.cpp
+  # test, so Kinematics.cpp and RobotarmRbd.cpp (where the rt code lives) are compiled into this
+  # executable (instead of linking the libraries) with test/eigen_malloc_guard.hpp force-included.
+  ament_add_gtest(kinematics_malloc_test
+    test/kinematics_malloc_test.cpp
+    src/Kinematics.cpp
+    src/RobotarmRbd.cpp
     SKIP_LINKING_MAIN_LIBRARIES)
-  target_compile_options(kinematics_core_malloc_test PRIVATE
+  target_compile_options(kinematics_malloc_test PRIVATE
     -include ${CMAKE_CURRENT_SOURCE_DIR}/test/eigen_malloc_guard.hpp)
-  target_include_directories(kinematics_core_malloc_test PRIVATE include test)
-  target_compile_features(kinematics_core_malloc_test PUBLIC cxx_std_17)
-  target_link_libraries(kinematics_core_malloc_test
+  target_include_directories(kinematics_malloc_test PRIVATE include test)
+  target_compile_features(kinematics_malloc_test PUBLIC cxx_std_17)
+  target_link_libraries(kinematics_malloc_test
+    urdfdom::urdfdom_model
     kinematics_interface::kinematics_interface
     pluginlib::pluginlib
     ament_index_cpp::ament_index_cpp

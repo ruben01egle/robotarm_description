@@ -34,7 +34,7 @@ def generate_launch_description():
     # positions with the kinematics plugin and publishes /joint_states. Do not run both, they
     # would fight over /joint_states.
     cartesian_jog_node = Node(
-        package='robotarm_kinematics',
+        package='robotarm_rbd',
         executable='cartesian_jog',
         output='screen',
         parameters=[{
@@ -45,7 +45,7 @@ def generate_launch_description():
 
     # six sliders (x, y, z, wx, wy, wz) that publish the twist on cmd_vel
     jog_gui_node = Node(
-        package='robotarm_kinematics',
+        package='robotarm_rbd',
         executable='cartesian_jog_gui',
         output='screen',
         condition=IfCondition(use_gui)

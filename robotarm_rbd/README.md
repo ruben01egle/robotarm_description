@@ -1,15 +1,15 @@
-# robotarm_kinematics
+# robotarm_rbd
 
-`kinematics_interface` plugin for the 6-DOF robot arm. `KinematicsCore` takes the joint origins and
+`kinematics_interface` plugin for the 6-DOF robot arm. `Kinematics` takes the joint origins and
 axes straight from the URDF and is the base for forward kinematics and Jacobians. It works for any
-serial chain of revolute joints, not only for 6 of them. `Kinematics` derives from it and will add the
-geometric inverse kinematics (IK).
+serial chain of revolute joints, not only for 6 of them. The geometric inverse kinematics (IK) is
+still to be added.
 
 Notation: `R(a, q)` rotates by `q` about the unit axis `a`, `O_k` is the origin of joint `k`.
 `X_in_Y` is the pose of frame X expressed in frame Y. Joint `k` is `joints_[k-1]`, N is the number of
 revolute joints.
 
-## Parameters (read once in `KinematicsCore::initialize`)
+## Parameters (read once in `Kinematics::initialize`)
 
 | parameter                  | default | meaning                                                                      |
 |----------------------------|---------|------------------------------------------------------------------------------|
@@ -32,7 +32,7 @@ A value that is negative, not finite or not a double makes `initialize` return `
 
 ## Robot model getters
 
-`KinematicsCore` hands out what it parsed from the URDF, so callers do not parse it again. All of them
+`Kinematics` hands out what it parsed from the URDF, so callers do not parse it again. All of them
 return `false` and leave the output untouched before `initialize` has run through. They allocate, call
 them during setup and not from the rt loop.
 
@@ -47,7 +47,7 @@ The order is the order of `joint_pos`: entry `i` is joint `i`, which connects li
 (link 0 is the root link). The tcp is neither a joint nor in the link list, but it is a valid `link_name`
 for the kinematics functions like any link.
 
-## URDF constraints (checked in `KinematicsCore::initialize`)
+## URDF constraints (checked in `Kinematics::initialize`)
 
 - Serial chain: every link has at most one child. The chain has at least one revolute joint in front of
   the tcp joint; there is no upper limit on the number of joints.
@@ -73,9 +73,8 @@ structure, the link lengths stay free):
 | axes 5 and 6 intersect at a right angle       |
 | axes 4, 5 and 6 meet in one point             |
 
-To be enforced in `Kinematics::initialize`. The draft check in `src/Kinematics.cpp` (commented out) is
-still written against the old DH parameters and has to be rewritten in terms of the joint axes and
-origins, evaluated at `q = 0` in the root link frame.
+To be enforced in `Kinematics::initialize`, in terms of the joint axes and origins, evaluated at
+`q = 0` in the root link frame.
 
 ## Forward kinematics
 
@@ -164,10 +163,10 @@ cartesian_jog_gui (6 sliders)  ->  cmd_vel (Twist)  ->  cartesian_jog  ->  /join
 ```
 
 ```
-ros2 launch robotarm_kinematics cartesian_jog.launch.py                 # sliders + RViz
-ros2 launch robotarm_kinematics cartesian_jog.launch.py gui:=false      # without the sliders
-ros2 launch robotarm_kinematics cartesian_jog.launch.py rviz:=false     # without RViz
-ros2 launch robotarm_kinematics cartesian_jog.launch.py lambda:=0.01    # more accurate, see below
+ros2 launch robotarm_rbd cartesian_jog.launch.py                 # sliders + RViz
+ros2 launch robotarm_rbd cartesian_jog.launch.py gui:=false      # without the sliders
+ros2 launch robotarm_rbd cartesian_jog.launch.py rviz:=false     # without RViz
+ros2 launch robotarm_rbd cartesian_jog.launch.py lambda:=0.01    # more accurate, see below
 
 # without the sliders: move the tool along base +x at 5 cm/s (publish continuously,
 # the node stops 0.2 s after the last message)
@@ -193,12 +192,12 @@ would publish `/joint_states`.
   of the plugin, which is loaded through pluginlib (`kinematics_plugin`), like a ros2_control controller would.
   Then the joint step is limited (below), added to the joint positions and published. Purely kinematic:
   no controller, no dynamics.
-- **Parameters**: `robot_description`, `kinematics_plugin` (`robotarm_kinematics/KinematicsCore`),
+- **Parameters**: `robot_description`, `kinematics_plugin` (`robotarm_rbd/Kinematics`),
   `rate` (100 Hz), `twist_timeout` (0.2 s), `initial_joint_positions`, `lambda` (launch argument, default 0.05).
 - **Watchdog**: the last twist is applied until it is `twist_timeout` old. Nothing older is used, and the
   tool coasts for at most that long after the last message (at 0.05 m/s: up to 1 cm).
 - **Robot model**: joint names, joint limits and the tcp link come from the plugin (robot model getters
-  above), the node does not parse the URDF itself. That is why it needs a `KinematicsCore` and links the
+  above), the node does not parse the URDF itself. That is why it needs a `Kinematics` and links the
   library.
 - **Joint limits** (`JointLimiter.hpp`), applied to the whole joint step: it is scaled by
   ONE factor, so the joints keep their ratio and the tool moves along the commanded direction, only slower.
@@ -218,20 +217,20 @@ would publish `/joint_states`.
 
 ```
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select robotarm_kinematics
+colcon build --packages-select robotarm_rbd
 source install/setup.bash
-colcon test --packages-select robotarm_kinematics --event-handlers console_direct+
-colcon test-result --test-result-base build/robotarm_kinematics --verbose
+colcon test --packages-select robotarm_rbd --event-handlers console_direct+
+colcon test-result --test-result-base build/robotarm_rbd --verbose
 ```
 
 The workspace must be sourced and `robotarm_description` built: the real URDF is processed with
 `xacro` (a missing package or `xacro` fails the tests, it is not skipped). Three gtest executables,
-also runnable directly from `build/robotarm_kinematics/` (with `--gtest_filter=...`):
+also runnable directly from `build/robotarm_rbd/` (with `--gtest_filter=...`):
 
 | executable                     | covers                                                                                  |
 |--------------------------------|-----------------------------------------------------------------------------------------|
-| `kinematics_core_test`         | URDF parsing (origins, normalised axes, limits, chain length), link transforms against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule), delta conversions and input validation, round-trip accuracy of the damped inverse |
-| `kinematics_core_malloc_test`  | the rt path does not allocate with pre-sized outputs (Eigen's malloc guard), with negative controls so the guard cannot be silently off |
+| `kinematics_test`         | URDF parsing (origins, normalised axes, limits, chain length), link transforms against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule), delta conversions and input validation, round-trip accuracy of the damped inverse |
+| `kinematics_malloc_test`  | the rt path does not allocate with pre-sized outputs (Eigen's malloc guard), with negative controls so the guard cannot be silently off |
 | `joint_limiter_test`           | the joint limit policy of the jog tool (`tools/cartesian_jog/JointLimiter.hpp`): velocity and position limits, uniform scaling, joints at / beyond a limit, invalid input |
 
 The round-trip test asserts the exact bound of the damped inverse, `|J⁺J dq − dq| ≤ λ² / (σ_min² + λ²) · |dq|`
@@ -241,6 +240,6 @@ URDFs (`test/test_utils.hpp`): two generated from a DH table (the one of the rob
 twists, offsets and negative lengths) and random chains of 1, 3, 6 and 7 joints with arbitrary origins and
 oblique axes of any length.
 
-`kinematics_core_malloc_test` compiles `src/KinematicsCore.cpp` itself instead of linking the library,
+`kinematics_malloc_test` compiles `src/Kinematics.cpp` itself instead of linking the library,
 because Eigen's malloc guard has to be compiled into the code under test. `ament_uncrustify` is
 disabled in `CMakeLists.txt`.

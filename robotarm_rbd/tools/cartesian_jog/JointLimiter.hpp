@@ -1,5 +1,5 @@
-#ifndef ROBOTARM_KINEMATICS_JOINTLIMITER_HPP
-#define ROBOTARM_KINEMATICS_JOINTLIMITER_HPP
+#ifndef ROBOTARM_RBD_JOINTLIMITER_HPP
+#define ROBOTARM_RBD_JOINTLIMITER_HPP
 
 #include <Eigen/Dense>
 
@@ -7,7 +7,7 @@
 #include <cmath>
 #include <vector>
 
-namespace robotarm_kinematics
+namespace robotarm_rbd
 {
 
 struct JointLimit
@@ -94,6 +94,6 @@ inline StepLimitResult limit_joint_step(
     return result;
 }
 
-}  // namespace robotarm_kinematics
+}  // namespace robotarm_rbd
 
-#endif  // ROBOTARM_KINEMATICS_JOINTLIMITER_HPP
+#endif  // ROBOTARM_RBD_JOINTLIMITER_HPP

@@ -10,9 +10,9 @@
 namespace
 {
 
-using robotarm_kinematics::JointLimit;
-using robotarm_kinematics::limit_joint_step;
-using robotarm_kinematics::StepLimit;
+using robotarm_rbd::JointLimit;
+using robotarm_rbd::limit_joint_step;
+using robotarm_rbd::StepLimit;
 
 // three joints: [-1, 1] rad, 2 rad/s / [-2, 0.5] rad, 1 rad/s / [0, 3] rad, 0.5 rad/s
 std::vector<JointLimit> limits()

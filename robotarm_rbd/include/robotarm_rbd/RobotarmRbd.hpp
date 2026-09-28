@@ -1,19 +1,24 @@
-#ifndef ROBOTARM_KINEMATICS_KINEMATICSCORE_HPP
-#define ROBOTARM_KINEMATICS_KINEMATICSCORE_HPP
+#ifndef ROBOTARM_RBD_ROBOTARMRBD_HPP
+#define ROBOTARM_RBD_ROBOTARMRBD_HPP
 
-#include "kinematics_interface/kinematics_interface.hpp"
-#include "pluginlib/class_list_macros.hpp"
-#include "rclcpp/clock.hpp"
-#include "urdf/model.h"
+// ROS free rigid body model of an robotarm
+//
+// Errors: bool functions return false and leaves a message in last_error() without allocating heap
+//
+// Not thread safe: the scratch buffers and the error buffer are written on every call
 
-namespace robotarm_kinematics
+#include <string>
+#include <vector>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <urdf_model/joint.h>
+
+namespace robotarm_rbd
 {
-
     constexpr double angular_eps = 1e-6;  // dimensionless
 	constexpr double linear_eps = 1e-6;   // metres, applied to the residual translation
-	constexpr int log_throttle_ms = 1000; // period of error logs in functions called from the rt loop
 
-class KinematicsCore : public kinematics_interface::KinematicsInterface
+class RobotarmRbd
 {
 public:
     struct Limits {
@@ -23,6 +28,22 @@ public:
         double max = 0;
     };
 
+    // <inertial> of a link, as in the URDF: com and com_rotation are the pose of the inertia frame in
+    // the link frame, inertia is the tensor about the com in that (rotated) frame.
+    // valid is false if the link has no <inertial>, the other members then keep their defaults.
+    struct InertialParams {
+        double mass = 0;
+        Eigen::Vector3d com = Eigen::Vector3d::Zero();
+        Eigen::Matrix3d inertia = Eigen::Matrix3d::Zero();
+        Eigen::Matrix3d com_rotation = Eigen::Matrix3d::Identity();
+        bool valid = false;
+    };
+
+    struct Config {
+        // damping factor of the damped least squares in calculate_jacobian_inverse(), >= 0
+        double lambda = 0.01;
+    };
+
 protected:
     class Joint {
     public:
@@ -30,6 +51,7 @@ protected:
         std::string parent_link_name_;
         std::string child_link_name_;
         Limits limits_;
+        InertialParams intertia_;  // of child_link, the body this joint moves
         // joint origin = link cs of child_link
         Eigen::Isometry3d joint_origin_in_parent_ = Eigen::Isometry3d::Identity();
         Eigen::Vector3d joint_axis_in_child_ = Eigen::Vector3d::Zero();
@@ -48,50 +70,41 @@ protected:
     };
 
 public:
-    // Caller contract of the kinematics functions below:
-    //  - inputs (joint_pos, delta_x, delta_theta) must be finite, and joint_pos / delta_theta must have
-    //    one entry per joint, otherwise the call logs an error, returns false and leaves the output untouched.
-    //  - dynamic-size outputs (jacobian 6xN, jacobian_inverse Nx6, delta_theta N) are resized by Eigen
-    //    if they do not fit. That allocates, so rt callers should pass pre-sized objects to stay
-    //    allocation free (the std::vector overloads of the base class allocate regardless).
-    KinematicsCore() = default;
-    virtual ~KinematicsCore() = default;
+    RobotarmRbd() = default;
+    virtual ~RobotarmRbd() = default;
 
-    virtual bool initialize(
-        const std::string &robot_description,
-        std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface> parameters_interface,
-        const std::string &param_namespace) override;
+    bool initialize(const std::string &robot_description, const Config &config);
 
-    virtual bool convert_cartesian_deltas_to_joint_deltas(
+    bool convert_cartesian_deltas_to_joint_deltas(
         const Eigen::VectorXd &joint_pos,
         const Eigen::Matrix<double, 6, 1> &delta_x,
         const std::string &link_name,
-        Eigen::VectorXd &delta_theta) override;
+        Eigen::VectorXd &delta_theta);
 
-    virtual bool convert_joint_deltas_to_cartesian_deltas(
+    bool convert_joint_deltas_to_cartesian_deltas(
         const Eigen::VectorXd &joint_pos,
         const Eigen::VectorXd &delta_theta,
         const std::string &link_name,
-        Eigen::Matrix<double, 6, 1> &delta_x) override;
+        Eigen::Matrix<double, 6, 1> &delta_x);
 
-    virtual bool calculate_link_transform(
+    bool calculate_link_transform(
         const Eigen::VectorXd &joint_pos,
         const std::string &link_name,
-        Eigen::Isometry3d &transform) override;
+        Eigen::Isometry3d &transform);
 
-    virtual bool calculate_jacobian(
+    bool calculate_jacobian(
         const Eigen::VectorXd &joint_pos,
         const std::string &link_name,
         Eigen::Matrix<double, 6,
-        Eigen::Dynamic> &jacobian) override;
+        Eigen::Dynamic> &jacobian);
     
-    virtual bool calculate_jacobian_inverse(
+    bool calculate_jacobian_inverse(
         const Eigen::VectorXd &joint_pos,
         const std::string &link_name,
         Eigen::Matrix<double,
-        Eigen::Dynamic, 6> &jacobian_inverse) override;
+        Eigen::Dynamic, 6> &jacobian_inverse);
 
-    Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
+    bool initialised() const { return initialised_; }
 
     // Robot model, all return false before initialize(). Joints are in joint_pos order. Links are the
     // root plus the child of each joint (joint i connects link i and i+1), the tcp is not included.
@@ -100,23 +113,26 @@ public:
     bool get_link_names(std::vector<std::string>& names);
     bool get_tcp_link_name(std::string& name);
 
-    // Logs the parsed chain (joint and link names, root -> tcp) as a table.
-    void print_joints() const;
+    std::string chain_table_log() const;
+
+    // Message of the last failure. Only meaningful right after a function returned false, it is
+    // not cleared on success.
+    const char * last_error() const { return error_; }
+
+private:
+    static Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
+    bool check_joint_pos(const Eigen::VectorXd &joint_pos);
+    // printf-style: writes the message into error_ (truncated to its size) and returns false
+    bool fail(const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 protected:
     std::vector<Joint> joints_;
     TCP tcp_;
 
 private:
-    // Common input validation of the kinematics functions: initialised, joint_pos has one entry
-    // per joint and is finite. Logs (throttled) and returns false if any of that is violated.
-    bool check_joint_pos(const Eigen::VectorXd &joint_pos);
-
+    char error_[256] = "";
     // true once initialize() has run through; every kinematics function refuses to work before that
     bool initialised_ = false;
-
-    // steady clock for the throttled error logs in the rt path
-    rclcpp::Clock clock_{RCL_STEADY_TIME};
 
     // scratch buffers for the kinematics functions: results are built here and only copied
     // to the caller's output once complete, so a failure leaves the output untouched
@@ -128,9 +144,7 @@ private:
     Eigen::MatrixXd M_;
     Eigen::LDLT<Eigen::MatrixXd> ldlt_;
 
-    // damping factor of the damped least squares in calculate_jacobian_inverse(),
-    // read from the "<param_namespace>.lambda" parameter in initialize()
-    double lambda_ = 0.01;
+    Config config_;
 };
 
 }

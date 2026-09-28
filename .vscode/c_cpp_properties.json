@@ -16,16 +16,16 @@
             "cStandard": "gnu11",
             "cppStandard": "c++14",
             "compileCommands": [
-                "${workspaceFolder}/build/robotarm_kinematics/compile_commands.json"
+                "${workspaceFolder}/build/robotarm_rbd/compile_commands.json"
             ]
         },
         {
-          "name": "Robotarm-Kinematics",
+          "name": "Robotarm-RBD",
           "compilerPath": "/usr/bin/gcc",
           "cStandard": "gnu17",
           "cppStandard": "c++20",
           "intelliSenseMode": "linux-gcc-x64",
-          "compileCommands": "${workspaceFolder}/build/robotarm_kinematics/compile_commands.json",
+          "compileCommands": "${workspaceFolder}/build/robotarm_rbd/compile_commands.json",
           "includePath": [
             "${workspaceFolder}/src/**",
             "/opt/ros/jazzy/include/**"

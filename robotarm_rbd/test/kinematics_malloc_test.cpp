@@ -1,8 +1,8 @@
-// The real-time path of KinematicsCore must not allocate when the caller passes pre-sized outputs.
+// The real-time path of Kinematics must not allocate when the caller passes pre-sized outputs.
 //
 // Eigen can turn heap allocations into failed assertions (EIGEN_RUNTIME_NO_MALLOC, see
 // eigen_malloc_guard.hpp). The guard has to be compiled into the code under test, so this target
-// compiles src/KinematicsCore.cpp itself instead of linking the library.
+// compiles src/Kinematics.cpp itself instead of linking the library.
 //
 // Every "must not allocate" check has a negative control that must allocate. Without those a guard
 // that is silently switched off (e.g. by NDEBUG) would let all checks pass.
@@ -55,7 +55,7 @@ protected:
         rng_.seed(4711);
     }
 
-    test_utils::TestableCore core_;
+    test_utils::TestableKinematics core_;
     std::string urdf_;
     std::unique_ptr<test_utils::ReferenceFk> ref_;
     std::mt19937 rng_;
@@ -100,7 +100,7 @@ TEST_F(MallocTest, TheGuardTripsWhenAnOutputHasToBeResized)
     // negative controls: an unsized output makes Eigen allocate, and the guard must notice
     const Eigen::VectorXd q = ref_->random_q(rng_);
     const Vector6 dx_in = test_utils::random_vector(rng_, 6, 1e-3);
-    const std::string tcp = core_.tcp_.tcp_name_;
+    const std::string tcp = test_utils::tcp_name(core_);
 
     Eigen::VectorXd dq_unsized;
     EXPECT_TRUE(allocates([&] {core_.convert_cartesian_deltas_to_joint_deltas(q, dx_in, tcp, dq_unsized);}));

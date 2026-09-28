@@ -1,91 +1,58 @@
-#include "robotarm_kinematics/KinematicsCore.hpp"
+#include "robotarm_rbd/RobotarmRbd.hpp"
 
-#include <Eigen/Geometry>
+#include <urdf_parser/urdf_parser.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 #include <iomanip>
 #include <sstream>
 
-#include "rclcpp/logging.hpp"
 
-namespace
-{
-// Built on demand so there is no static-init ordering dependency on rclcpp.
-rclcpp::Logger logger()
-{
-	return rclcpp::get_logger("robotarm_kinematics");
-}
-}
 
-PLUGINLIB_EXPORT_CLASS(
-  	robotarm_kinematics::KinematicsCore, 
-  	kinematics_interface::KinematicsInterface
-)
-
-bool robotarm_kinematics::KinematicsCore::initialize(
-  	const std::string &robot_description,
-  	std::shared_ptr<rclcpp::node_interfaces::NodeParametersInterface> parameters_interface,
-  	const std::string &param_namespace)
+bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description, const Config &config)
 {
     initialised_ = false;
     joints_.clear();
 
-    // Declared only if the host node has not already declared it (or auto-declared it from overrides).
-    const std::string lambda_param = (param_namespace.empty() ? "" : param_namespace + ".") + "lambda";
-    try {
-        if (!parameters_interface->has_parameter(lambda_param)) {
-            parameters_interface->declare_parameter(lambda_param, rclcpp::ParameterValue(0.01));
-        }
-        lambda_ = parameters_interface->get_parameter(lambda_param).as_double();
-    } catch (const std::exception & e) {
-        RCLCPP_ERROR(logger(), "Failed to read parameter '%s': %s", lambda_param.c_str(), e.what());
-        return false;
+    if (!std::isfinite(config.lambda) || config.lambda < 0.0) {
+        return fail("lambda must be finite and >= 0, got %g", config.lambda);
     }
-    if (!std::isfinite(lambda_) || lambda_ < 0.0) {
-        RCLCPP_ERROR(logger(), "Parameter '%s' must be finite and >= 0", lambda_param.c_str());
-        return false;
-    }
+    config_ = config;
 
-    urdf::Model model;
-    if (!model.initString(robot_description)) {
-        RCLCPP_ERROR(logger(), "Failed to parse robot_description");
-        return false;
+    urdf::ModelInterfaceSharedPtr model = urdf::parseURDF(robot_description);
+    if (!model) {
+        return fail("Failed to parse robot_description");
     }
 
     // Walk root -> tip so joints_ ends up in kinematic order, not map/alphabetical order.
-    urdf::LinkConstSharedPtr link_urdf = model.getRoot();
+    urdf::LinkConstSharedPtr link_urdf = model->getRoot();
 	if (!link_urdf) {
-		RCLCPP_ERROR(logger(), "URDF has no root link");
-		return false;
+		return fail("URDF has no root link");
 	}
 	std::vector<urdf::JointConstSharedPtr> joints_urdf;
 
 	while (!link_urdf->child_joints.empty()) {
 		if (link_urdf->child_joints.size() != 1) {
-			RCLCPP_ERROR(logger(), "Link %s has multiple children links", link_urdf->name.c_str());
-			return false;
+			return fail("Link %s has multiple children links", link_urdf->name.c_str());
 		}
 		urdf::JointConstSharedPtr joint = link_urdf->child_joints[0];
         joints_urdf.push_back(joint);
-        link_urdf = model.getLink(joint->child_link_name);
+        link_urdf = model->getLink(joint->child_link_name);
 		if (!link_urdf) {
-			RCLCPP_ERROR(logger(), "Joint %s references unknown child link %s",
+			return fail("Joint %s references unknown child link %s",
 				joint->name.c_str(), joint->child_link_name.c_str());
-			return false;
 		}
 	}
 
 	if (joints_urdf.size() < 2) {
-		RCLCPP_ERROR(logger(), "URDF chain has %zu joint(s), expected more",
-			joints_urdf.size());
-		return false;
+		return fail("URDF chain has %zu joint(s), expected more", joints_urdf.size());
 	}
 
 	urdf::JointConstSharedPtr tcp_joint_urdf = joints_urdf.back();
 	if (tcp_joint_urdf->type != urdf::Joint::FIXED) {
-		RCLCPP_ERROR(logger(), "TCP-Joint %s has unexpected type", tcp_joint_urdf->name.c_str());
-		return false;
+		return fail("TCP-Joint %s has unexpected type", tcp_joint_urdf->name.c_str());
 	}
 	tcp_.tcp_name_ = tcp_joint_urdf->child_link_name;
 	tcp_.parent_link_name_ = tcp_joint_urdf->parent_link_name;
@@ -93,30 +60,26 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 
     for (size_t i = 0; i < joints_urdf.size()-1; ++i) {
 		urdf::JointConstSharedPtr joint_urdf = joints_urdf[i];
-  
+
 		Joint joint;
 		if (joint_urdf->type != urdf::Joint::REVOLUTE) {
-			RCLCPP_ERROR(logger(), "Joint %s has unexpected type", joint_urdf->name.c_str());
-			return false;
+			return fail("Joint %s has unexpected type", joint_urdf->name.c_str());
 		}
-		
+
 		joint.joint_name_ = joint_urdf->name;
 		joint.parent_link_name_ = joint_urdf->parent_link_name;
 		joint.child_link_name_ = joint_urdf->child_link_name;
 
 		if (!joint_urdf->limits) {
-			RCLCPP_ERROR(logger(), "Joint %s has no limits", joint_urdf->name.c_str());
-			return false;
+			return fail("Joint %s has no limits", joint_urdf->name.c_str());
 		}
 		const auto & l = *joint_urdf->limits;
 
 		if (!(l.lower < l.upper)) {
-			RCLCPP_ERROR(logger(), "Joint %s has invalid position limits", joint_urdf->name.c_str());
-			return false;
+			return fail("Joint %s has invalid position limits", joint_urdf->name.c_str());
 		}
 		if (l.velocity <= 0.0 || l.effort <= 0.0) {
-			RCLCPP_ERROR(logger(), "Joint %s has invalid velocity/effort limits", joint_urdf->name.c_str());
-			return false;
+			return fail("Joint %s has invalid velocity/effort limits", joint_urdf->name.c_str());
 		}
 
 		joint.limits_.min = l.lower;
@@ -132,10 +95,24 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 													 joint_urdf->axis.y,
 													 joint_urdf->axis.z);
 		if (joint.joint_axis_in_child_.isZero()) {
-			RCLCPP_ERROR(logger(), "Joint %s invalid axis (all zero)", joint_urdf->name.c_str());
-			return false;
+			return fail("Joint %s invalid axis (all zero)", joint_urdf->name.c_str());
 		}
 		joint.joint_axis_in_child_.normalize();
+
+		// inertia of the moved body, only if the child link has an <inertial>
+		const urdf::LinkConstSharedPtr child_urdf = model->getLink(joint_urdf->child_link_name);
+		if (child_urdf->inertial) {
+			const urdf::Inertial & in = *child_urdf->inertial;
+			const urdf::Rotation & r = in.origin.rotation;
+			joint.intertia_.mass = in.mass;
+			joint.intertia_.com = Eigen::Vector3d(in.origin.position.x, in.origin.position.y,
+												  in.origin.position.z);
+			joint.intertia_.com_rotation = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
+			joint.intertia_.inertia << in.ixx, in.ixy, in.ixz,
+									   in.ixy, in.iyy, in.iyz,
+									   in.ixz, in.iyz, in.izz;
+			joint.intertia_.valid = true;
+		}
 
 		joints_.push_back(joint);
     }
@@ -148,22 +125,16 @@ bool robotarm_kinematics::KinematicsCore::initialize(
 	M_ = Eigen::MatrixXd::Zero(joints_.size(), joints_.size());
 	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(joints_.size());
 
-    print_joints();
     initialised_ = true;
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::convert_cartesian_deltas_to_joint_deltas(
-	const Eigen::VectorXd &joint_pos,
-  	const Eigen::Matrix<double, 6, 1> &delta_x,
-  	const std::string &link_name,
-  	Eigen::VectorXd &delta_theta)
+bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(const Eigen::VectorXd &joint_pos, const Eigen::Matrix<double, 6, 1> &delta_x, const std::string &link_name, Eigen::VectorXd &delta_theta)
 {
-	if (!check_joint_pos(joint_pos)) return false;
+    if (!check_joint_pos(joint_pos)) return false;
 
 	if (!delta_x.allFinite()) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "delta_x contains NaN or inf");
-		return false;
+		return fail("delta_x contains NaN or inf");
 	}
 
 	// delta_theta = J⁺ delta_x
@@ -172,22 +143,15 @@ bool robotarm_kinematics::KinematicsCore::convert_cartesian_deltas_to_joint_delt
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::convert_joint_deltas_to_cartesian_deltas(
-  	const Eigen::VectorXd &joint_pos,
-  	const Eigen::VectorXd &delta_theta,
-  	const std::string &link_name,
-  	Eigen::Matrix<double, 6, 1> &delta_x)
+bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(const Eigen::VectorXd &joint_pos, const Eigen::VectorXd &delta_theta, const std::string &link_name, Eigen::Matrix<double, 6, 1> &delta_x)
 {
-	// checks initialised_ first, which the size check of delta_theta below relies on
 	if (!check_joint_pos(joint_pos)) return false;
 
 	if (delta_theta.size() != static_cast<Eigen::Index>(joints_.size())) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Unexpected delta_theta dimension");
-		return false;
+		return fail("Unexpected delta_theta dimension");
 	}
 	if (!delta_theta.allFinite()) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "delta_theta contains NaN or inf");
-		return false;
+		return fail("delta_theta contains NaN or inf");
 	}
 
 	// delta_x = J delta_theta
@@ -196,32 +160,9 @@ bool robotarm_kinematics::KinematicsCore::convert_joint_deltas_to_cartesian_delt
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::check_joint_pos(const Eigen::VectorXd &joint_pos)
+bool robotarm_rbd::RobotarmRbd::calculate_link_transform(const Eigen::VectorXd &joint_pos, const std::string &link_name, Eigen::Isometry3d &transform)
 {
-	if (!initialised_) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Kinematics not initialised");
-		return false;
-	}
-
-	if (joint_pos.size() != static_cast<Eigen::Index>(joints_.size())) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Unexpected joint_pos dimension");
-		return false;
-	}
-
-	if (!joint_pos.allFinite()) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "joint_pos contains NaN or inf");
-		return false;
-	}
-
-	return true;
-}
-
-bool robotarm_kinematics::KinematicsCore::calculate_link_transform(
-  	const Eigen::VectorXd &joint_pos,
-  	const std::string &link_name,
-  	Eigen::Isometry3d &transform)
-{
-	if (!check_joint_pos(joint_pos)) return false;
+    if (!check_joint_pos(joint_pos)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		transform = Eigen::Isometry3d::Identity();
@@ -242,17 +183,12 @@ bool robotarm_kinematics::KinematicsCore::calculate_link_transform(
 		return true;
 	}
 
-	RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms,
-		"Link %s not found in kinematic chain", link_name.c_str());
-	return false;
+	return fail("Link %s not found in kinematic chain", link_name.c_str());
 }
 
-bool robotarm_kinematics::KinematicsCore::calculate_jacobian(
-  	const Eigen::VectorXd &joint_pos,
-  	const std::string &link_name,
-  	Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
+bool robotarm_rbd::RobotarmRbd::calculate_jacobian(const Eigen::VectorXd &joint_pos, const std::string &link_name, Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
 {
-	if (!check_joint_pos(joint_pos)) return false;
+    if (!check_joint_pos(joint_pos)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		jacobian.setZero(6, joints_.size());
@@ -283,12 +219,9 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian(
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::calculate_jacobian_inverse(
-  	const Eigen::VectorXd &joint_pos,
-  	const std::string &link_name,
-  	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
+bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(const Eigen::VectorXd &joint_pos, const std::string &link_name, Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
 {
-	// joint_pos is validated by calculate_jacobian(), which is the first thing called here
+    // joint_pos is validated by calculate_jacobian(), which is the first thing called here
 	if (!calculate_jacobian(joint_pos, link_name, j_cji_)) return false;
 
 	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
@@ -296,20 +229,19 @@ bool robotarm_kinematics::KinematicsCore::calculate_jacobian_inverse(
 	// M = (JᵀJ + λ²I)
 	// X = J⁺
 	M_.noalias() = j_cji_.transpose() * j_cji_;
-	M_.diagonal().array() += lambda_*lambda_;
+	M_.diagonal().array() += config_.lambda * config_.lambda;
 
 	// factor M once, and check that it worked
 	ldlt_.compute(M_);
 	if (ldlt_.info() != Eigen::Success) {
-		RCLCPP_ERROR_THROTTLE(logger(), clock_, log_throttle_ms, "Factorization failed");
-		return false;
+		return fail("Factorization failed");
 	}
 	jacobian_inverse = ldlt_.solve(j_cji_.transpose());
 
     return true;
 }
 
-Eigen::Isometry3d robotarm_kinematics::KinematicsCore::joint_origin_to_isometry(urdf::JointConstSharedPtr joint)
+Eigen::Isometry3d robotarm_rbd::RobotarmRbd::joint_origin_to_isometry(urdf::JointConstSharedPtr joint)
 {
     const urdf::Pose & origin = joint->parent_to_joint_origin_transform;
 	double x, y, z;
@@ -326,11 +258,27 @@ Eigen::Isometry3d robotarm_kinematics::KinematicsCore::joint_origin_to_isometry(
     return T;
 }
 
-bool robotarm_kinematics::KinematicsCore::get_joint_names(std::vector<std::string>& names)
+bool robotarm_rbd::RobotarmRbd::check_joint_pos(const Eigen::VectorXd &joint_pos)
 {
     if (!initialised_) {
-		RCLCPP_ERROR(logger(), "Not initialised");
-		return false;
+		return fail("Kinematics not initialised");
+	}
+
+	if (joint_pos.size() != static_cast<Eigen::Index>(joints_.size())) {
+		return fail("Unexpected joint_pos dimension");
+	}
+
+	if (!joint_pos.allFinite()) {
+		return fail("joint_pos contains NaN or inf");
+	}
+
+	return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::get_joint_names(std::vector<std::string>& names)
+{
+    if (!initialised_) {
+		return fail("Not initialised");
 	}
 	names.clear();
 	names.reserve(joints_.size());
@@ -340,11 +288,10 @@ bool robotarm_kinematics::KinematicsCore::get_joint_names(std::vector<std::strin
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::get_joint_limits(std::vector<Limits>& limits)
+bool robotarm_rbd::RobotarmRbd::get_joint_limits(std::vector<Limits>& limits)
 {
     if (!initialised_) {
-		RCLCPP_ERROR(logger(), "Not initialised");
-		return false;
+		return fail("Not initialised");
 	}
 	limits.clear();
 	limits.reserve(joints_.size());
@@ -354,11 +301,10 @@ bool robotarm_kinematics::KinematicsCore::get_joint_limits(std::vector<Limits>& 
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::get_link_names(std::vector<std::string> &names)
+bool robotarm_rbd::RobotarmRbd::get_link_names(std::vector<std::string> &names)
 {
     if (!initialised_) {
-		RCLCPP_ERROR(logger(), "Not initialised");
-		return false;
+		return fail("Not initialised");
 	}
 	names.clear();
 	names.reserve(joints_.size()+1);
@@ -369,17 +315,16 @@ bool robotarm_kinematics::KinematicsCore::get_link_names(std::vector<std::string
     return true;
 }
 
-bool robotarm_kinematics::KinematicsCore::get_tcp_link_name(std::string& name)
+bool robotarm_rbd::RobotarmRbd::get_tcp_link_name(std::string& name)
 {
     if (!initialised_) {
-		RCLCPP_ERROR(logger(), "Not initialised");
-		return false;
+		return fail("Not initialised");
 	}
 	name = tcp_.tcp_name_;
     return true;
 }
 
-void robotarm_kinematics::KinematicsCore::print_joints() const
+std::string robotarm_rbd::RobotarmRbd::chain_table_log() const
 {
     size_t w_joint = std::string("(fixed)").size();
     size_t w_parent = std::max(std::string("parent link").size(), tcp_.parent_link_name_.size());
@@ -412,7 +357,14 @@ void robotarm_kinematics::KinematicsCore::print_joints() const
     row(os, "tcp", "(fixed)", tcp_.parent_link_name_, tcp_.tcp_name_);
     os << "\n";
 
-    RCLCPP_INFO(logger(), "%s", os.str().c_str());
+    return os.str();
 }
 
-
+bool robotarm_rbd::RobotarmRbd::fail(const char *fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	std::vsnprintf(error_, sizeof(error_), fmt, args);
+	va_end(args);
+	return false;
+}

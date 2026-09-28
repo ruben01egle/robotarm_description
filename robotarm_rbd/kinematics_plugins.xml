@@ -1,6 +1,6 @@
-<library path="robotarm_kinematics">
-  <class name="robotarm_kinematics/KinematicsCore"
-         type="robotarm_kinematics::KinematicsCore"
+<library path="robotarm_rbd">
+  <class name="robotarm_rbd/Kinematics"
+         type="robotarm_rbd::Kinematics"
          base_class_type="kinematics_interface::KinematicsInterface">
     <description>
       Shared FK/Jacobian kinematics for robotarm

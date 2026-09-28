@@ -1,6 +1,6 @@
 {
     "names": {
-        "robotarm_kinematics": {
+        "robotarm_rbd": {
             "cmake-args": [
                 "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
             ]

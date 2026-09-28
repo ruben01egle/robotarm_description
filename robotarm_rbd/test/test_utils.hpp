@@ -1,8 +1,9 @@
-#ifndef ROBOTARM_KINEMATICS_TEST_UTILS_HPP
-#define ROBOTARM_KINEMATICS_TEST_UTILS_HPP
+#ifndef ROBOTARM_RBD_TEST_UTILS_HPP
+#define ROBOTARM_RBD_TEST_UTILS_HPP
 
-// Helpers shared by the KinematicsCore tests:
-//  - TestableCore:  exposes the parsed chain of KinematicsCore
+// Helpers shared by the Kinematics tests:
+//  - TestableKinematics:  the plugin under test; its parsed chain is checked through TestableRbd
+//                         (testable_rbd.hpp), since Kinematics only holds it inside RobotarmRbd
 //  - UrdfSpec:      builds a serial-chain URDF, with knobs to break it on purpose. Filled either
 //                   from a DH table (realistic arm geometry) or with random origins and axes
 //                   (make_random_spec, any number of joints, nothing DH-conform about it)
@@ -25,7 +26,8 @@
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "robotarm_kinematics/KinematicsCore.hpp"
+#include "robotarm_rbd/Kinematics.hpp"
+#include "testable_rbd.hpp"
 #include "urdf/model.h"
 
 namespace test_utils
@@ -35,12 +37,15 @@ using Jacobian = Eigen::Matrix<double, 6, Eigen::Dynamic>;
 using JacobianInverse = Eigen::Matrix<double, Eigen::Dynamic, 6>;
 using Vector6 = Eigen::Matrix<double, 6, 1>;
 
-class TestableCore : public robotarm_kinematics::KinematicsCore
+using TestableKinematics = robotarm_rbd::Kinematics;
+
+// tcp link name through the public getter, empty (and a test failure) before initialize()
+inline std::string tcp_name(robotarm_rbd::Kinematics & core)
 {
-public:
-    using KinematicsCore::joints_;
-    using KinematicsCore::tcp_;
-};
+    std::string name;
+    EXPECT_TRUE(core.get_tcp_link_name(name));
+    return name;
+}
 
 // initialize() reads the "lambda" parameter, so it needs a node that carries the override
 inline std::vector<rclcpp::Parameter> lambda_param(double lambda)
@@ -49,7 +54,7 @@ inline std::vector<rclcpp::Parameter> lambda_param(double lambda)
 }
 
 inline bool initialize(
-    TestableCore & core, const std::string & urdf,
+    TestableKinematics & core, const std::string & urdf,
     const std::vector<rclcpp::Parameter> & overrides = {})
 {
     static int counter = 0;
@@ -360,4 +365,4 @@ inline std::string real_urdf()
 
 }  // namespace test_utils
 
-#endif  // ROBOTARM_KINEMATICS_TEST_UTILS_HPP
+#endif  // ROBOTARM_RBD_TEST_UTILS_HPP

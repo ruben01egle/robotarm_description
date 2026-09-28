@@ -32,8 +32,8 @@ Two rendering styles (`--style`):
 - `both`: renders both, stacked in one figure.
 
 FK is computed independently in this script (standard URDF joint
-composition via numpy) rather than through `robotarm_kinematics`'s
-`KinematicsCore`, since that C++ class requires a live `rclcpp` node to
+composition via numpy) rather than through `robotarm_rbd`'s
+`Kinematics`, since that C++ class requires a live `rclcpp` node to
 initialize and has no Python bindings.
 
 ## Dependencies

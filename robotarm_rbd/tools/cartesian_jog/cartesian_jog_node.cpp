@@ -28,14 +28,14 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 
 #include "JointLimiter.hpp"
-#include "robotarm_kinematics/KinematicsCore.hpp"
+#include "robotarm_rbd/Kinematics.hpp"
 
 namespace
 {
 
 using Clock = std::chrono::steady_clock;
-using robotarm_kinematics::JointLimit;
-using robotarm_kinematics::StepLimit;
+using robotarm_rbd::JointLimit;
+using robotarm_rbd::StepLimit;
 using Vector6 = Eigen::Matrix<double, 6, 1>;
 
 constexpr int kLogThrottleMs = 1000;
@@ -48,7 +48,7 @@ public:
     {
         const std::string robot_description = declare_parameter<std::string>("robot_description", "");
         const std::string plugin = declare_parameter<std::string>(
-            "kinematics_plugin", "robotarm_kinematics/KinematicsCore");
+            "kinematics_plugin", "robotarm_rbd/Kinematics");
         const double rate = declare_parameter<double>("rate", 100.0);
         // the last twist keeps being applied until it is this old: so this is also how far the tool
         // coasts after the last message. Keep it a few publish periods.
@@ -109,14 +109,14 @@ private:
 
     // Joint names (chain order, the order of q_), joint limits and tcp link come from the plugin, which
     // parsed and validated the URDF in initialize(). That is not part of kinematics_interface, so the
-    // plugin has to be a KinematicsCore (or derived from it).
+    // plugin has to be a Kinematics (or derived from it).
     void read_robot_model()
     {
-        auto * core = dynamic_cast<robotarm_kinematics::KinematicsCore *>(kinematics_.get());
+        auto * core = dynamic_cast<robotarm_rbd::Kinematics *>(kinematics_.get());
         if (!core) {
-            throw std::runtime_error("the kinematics plugin is not a robotarm_kinematics::KinematicsCore");
+            throw std::runtime_error("the kinematics plugin is not a robotarm_rbd::Kinematics");
         }
-        std::vector<robotarm_kinematics::KinematicsCore::Limits> limits;
+        std::vector<robotarm_rbd::Kinematics::Limits> limits;
         if (!core->get_joint_names(joint_names_) || !core->get_joint_limits(limits) ||
             !core->get_tcp_link_name(tcp_link_))
         {
@@ -201,7 +201,7 @@ private:
             return;
         }
 
-        const auto limited = robotarm_kinematics::limit_joint_step(q_, dq_, limits_, dt);
+        const auto limited = robotarm_rbd::limit_joint_step(q_, dq_, limits_, dt);
         if (limited.reason == StepLimit::Invalid) {
             dq_.setZero();
             RCLCPP_ERROR_THROTTLE(
