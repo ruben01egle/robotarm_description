@@ -104,14 +104,20 @@ bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description,
 		if (child_urdf->inertial) {
 			const urdf::Inertial & in = *child_urdf->inertial;
 			const urdf::Rotation & r = in.origin.rotation;
-			joint.intertia_.mass = in.mass;
-			joint.intertia_.com = Eigen::Vector3d(in.origin.position.x, in.origin.position.y,
+			joint.inertia_.mass = in.mass;
+			// vector to com in joint-frame
+			joint.inertia_.com = Eigen::Vector3d(in.origin.position.x, in.origin.position.y,
 												  in.origin.position.z);
-			joint.intertia_.com_rotation = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
-			joint.intertia_.inertia << in.ixx, in.ixy, in.ixz,
-									   in.ixy, in.iyy, in.iyz,
-									   in.ixz, in.iyz, in.izz;
-			joint.intertia_.valid = true;
+			Eigen::Matrix3d R_com = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
+			// inertia tensor of com in com-frame
+			Eigen::Matrix3d I_com;
+			I_com << in.ixx, in.ixy, in.ixz,
+					 in.ixy, in.iyy, in.iyz,
+					 in.ixz, in.iyz, in.izz;
+			// I_joint = R * I_com * R^T: rotates tensor from com axes into joint axes (L = R I_com R^T ω)
+			// reference point stays at com
+			joint.inertia_.com_inertia_in_joint = R_com * I_com * R_com.transpose();
+			joint.inertia_.valid = true;
 		}
 
 		joints_.push_back(joint);
@@ -129,40 +135,51 @@ bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description,
     return true;
 }
 
-bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(const Eigen::VectorXd &joint_pos, const Eigen::Matrix<double, 6, 1> &delta_x, const std::string &link_name, Eigen::VectorXd &delta_theta)
+bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(
+	const Eigen::VectorXd &q,
+	const Eigen::Matrix<double, 6, 1> &delta_x,
+	const std::string &link_name,
+	Eigen::VectorXd &delta_q)
 {
-    if (!check_joint_pos(joint_pos)) return false;
+    if (!check_q(q)) return false;
 
 	if (!delta_x.allFinite()) {
 		return fail("delta_x contains NaN or inf");
 	}
 
-	// delta_theta = J⁺ delta_x
-	if (!calculate_jacobian_inverse(joint_pos, link_name, j_inv_cd2jd_)) return false;
-	delta_theta.noalias() = j_inv_cd2jd_ * delta_x;
+	// delta_q = J⁺ delta_x
+	if (!calculate_jacobian_inverse(q, link_name, j_inv_cd2jd_)) return false;
+	delta_q.noalias() = j_inv_cd2jd_ * delta_x;
     return true;
 }
 
-bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(const Eigen::VectorXd &joint_pos, const Eigen::VectorXd &delta_theta, const std::string &link_name, Eigen::Matrix<double, 6, 1> &delta_x)
+bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
+	const Eigen::VectorXd &q,
+	const Eigen::VectorXd &delta_q,
+	const std::string &link_name,
+	Eigen::Matrix<double, 6, 1> &delta_x)
 {
-	if (!check_joint_pos(joint_pos)) return false;
+	if (!check_q(q)) return false;
 
-	if (delta_theta.size() != static_cast<Eigen::Index>(joints_.size())) {
-		return fail("Unexpected delta_theta dimension");
+	if (delta_q.size() != static_cast<Eigen::Index>(joints_.size())) {
+		return fail("Unexpected delta_q dimension");
 	}
-	if (!delta_theta.allFinite()) {
-		return fail("delta_theta contains NaN or inf");
+	if (!delta_q.allFinite()) {
+		return fail("delta_q contains NaN or inf");
 	}
 
-	// delta_x = J delta_theta
-	if (!calculate_jacobian(joint_pos, link_name, j_jd2cd_)) return false;
-	delta_x.noalias() = j_jd2cd_ * delta_theta;
+	// delta_x = J delta_q
+	if (!calculate_jacobian(q, link_name, j_jd2cd_)) return false;
+	delta_x.noalias() = j_jd2cd_ * delta_q;
     return true;
 }
 
-bool robotarm_rbd::RobotarmRbd::calculate_link_transform(const Eigen::VectorXd &joint_pos, const std::string &link_name, Eigen::Isometry3d &transform)
+bool robotarm_rbd::RobotarmRbd::calculate_link_transform(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	Eigen::Isometry3d &transform)
 {
-    if (!check_joint_pos(joint_pos)) return false;
+    if (!check_q(q)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		transform = Eigen::Isometry3d::Identity();
@@ -171,7 +188,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_link_transform(const Eigen::VectorXd &
 
 	Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
 	for (size_t i = 0; i < joints_.size(); ++i) {
-		T = T * joints_[i].transform(joint_pos[i]);
+		T = T * joints_[i].transform(q[i]);
 		if (joints_[i].child_link_name_ == link_name) {
 			transform = T;
 			return true;
@@ -186,9 +203,12 @@ bool robotarm_rbd::RobotarmRbd::calculate_link_transform(const Eigen::VectorXd &
 	return fail("Link %s not found in kinematic chain", link_name.c_str());
 }
 
-bool robotarm_rbd::RobotarmRbd::calculate_jacobian(const Eigen::VectorXd &joint_pos, const std::string &link_name, Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
+bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
 {
-    if (!check_joint_pos(joint_pos)) return false;
+    if (!check_q(q)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		jacobian.setZero(6, joints_.size());
@@ -197,13 +217,13 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(const Eigen::VectorXd &joint_
 
 	j_cj_.setZero();
 	Eigen::Isometry3d T_end;
-	if (!calculate_link_transform(joint_pos, link_name, T_end)) return false;
+	if (!calculate_link_transform(q, link_name, T_end)) return false;
 	Eigen::Vector3d p_end = T_end.translation();
 
 	Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
 	for (size_t i = 0; i < joints_.size(); ++i) {
 
-		T = T * joints_[i].transform(joint_pos[i]);
+		T = T * joints_[i].transform(q[i]);
 		Eigen::Vector3d joint_axis = T.linear() * joints_[i].joint_axis_in_child_;
 		Eigen::Vector3d p_i = T.translation();
 
@@ -219,10 +239,13 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(const Eigen::VectorXd &joint_
     return true;
 }
 
-bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(const Eigen::VectorXd &joint_pos, const std::string &link_name, Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
+bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
 {
-    // joint_pos is validated by calculate_jacobian(), which is the first thing called here
-	if (!calculate_jacobian(joint_pos, link_name, j_cji_)) return false;
+    // q is validated by calculate_jacobian(), which is the first thing called here
+	if (!calculate_jacobian(q, link_name, j_cji_)) return false;
 
 	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
 	// J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ -> (JᵀJ + λ²I)J⁺ = Jᵀ as MX = Jᵀ with:
@@ -238,6 +261,17 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(const Eigen::VectorXd
 	}
 	jacobian_inverse = ldlt_.solve(j_cji_.transpose());
 
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
+	const Eigen::VectorXd &q,
+	const Eigen::VectorXd &dq,
+	const Eigen::VectorXd &ddq,
+	Eigen::VectorXd &tau)
+{
+	// forward pass
+	
     return true;
 }
 
@@ -258,18 +292,18 @@ Eigen::Isometry3d robotarm_rbd::RobotarmRbd::joint_origin_to_isometry(urdf::Join
     return T;
 }
 
-bool robotarm_rbd::RobotarmRbd::check_joint_pos(const Eigen::VectorXd &joint_pos)
+bool robotarm_rbd::RobotarmRbd::check_q(const Eigen::VectorXd &q)
 {
     if (!initialised_) {
 		return fail("Kinematics not initialised");
 	}
 
-	if (joint_pos.size() != static_cast<Eigen::Index>(joints_.size())) {
-		return fail("Unexpected joint_pos dimension");
+	if (q.size() != static_cast<Eigen::Index>(joints_.size())) {
+		return fail("Unexpected q dimension");
 	}
 
-	if (!joint_pos.allFinite()) {
-		return fail("joint_pos contains NaN or inf");
+	if (!q.allFinite()) {
+		return fail("q contains NaN or inf");
 	}
 
 	return true;

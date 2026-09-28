@@ -18,6 +18,16 @@ namespace robotarm_rbd
     constexpr double angular_eps = 1e-6;  // dimensionless
 	constexpr double linear_eps = 1e-6;   // metres, applied to the residual translation
 
+class RobotarmData
+{
+public:
+    std::vector<Eigen::Isometry3d> T;
+    std::vector<Eigen::Vector3d> w;
+    std::vector<Eigen::Vector3d> dot_w;
+    std::vector<Eigen::Vector3d> a_org;
+    std::vector<Eigen::Vector3d> a_com;
+};
+
 class RobotarmRbd
 {
 public:
@@ -28,14 +38,11 @@ public:
         double max = 0;
     };
 
-    // <inertial> of a link, as in the URDF: com and com_rotation are the pose of the inertia frame in
-    // the link frame, inertia is the tensor about the com in that (rotated) frame.
     // valid is false if the link has no <inertial>, the other members then keep their defaults.
     struct InertialParams {
         double mass = 0;
-        Eigen::Vector3d com = Eigen::Vector3d::Zero();
-        Eigen::Matrix3d inertia = Eigen::Matrix3d::Zero();
-        Eigen::Matrix3d com_rotation = Eigen::Matrix3d::Identity();
+        Eigen::Vector3d com = Eigen::Vector3d::Zero();                      // CoM position in joint frame
+        Eigen::Matrix3d com_inertia_in_joint = Eigen::Matrix3d::Zero();     // about CoM, in joint axes
         bool valid = false;
     };
 
@@ -51,7 +58,7 @@ protected:
         std::string parent_link_name_;
         std::string child_link_name_;
         Limits limits_;
-        InertialParams intertia_;  // of child_link, the body this joint moves
+        InertialParams inertia_;  // of child_link, the body this joint moves
         // joint origin = link cs of child_link
         Eigen::Isometry3d joint_origin_in_parent_ = Eigen::Isometry3d::Identity();
         Eigen::Vector3d joint_axis_in_child_ = Eigen::Vector3d::Zero();
@@ -76,33 +83,39 @@ public:
     bool initialize(const std::string &robot_description, const Config &config);
 
     bool convert_cartesian_deltas_to_joint_deltas(
-        const Eigen::VectorXd &joint_pos,
+        const Eigen::VectorXd &q,
         const Eigen::Matrix<double, 6, 1> &delta_x,
         const std::string &link_name,
-        Eigen::VectorXd &delta_theta);
+        Eigen::VectorXd &delta_q);
 
     bool convert_joint_deltas_to_cartesian_deltas(
-        const Eigen::VectorXd &joint_pos,
-        const Eigen::VectorXd &delta_theta,
+        const Eigen::VectorXd &q,
+        const Eigen::VectorXd &delta_q,
         const std::string &link_name,
         Eigen::Matrix<double, 6, 1> &delta_x);
 
     bool calculate_link_transform(
-        const Eigen::VectorXd &joint_pos,
+        const Eigen::VectorXd &q,
         const std::string &link_name,
         Eigen::Isometry3d &transform);
 
     bool calculate_jacobian(
-        const Eigen::VectorXd &joint_pos,
+        const Eigen::VectorXd &q,
         const std::string &link_name,
         Eigen::Matrix<double, 6,
         Eigen::Dynamic> &jacobian);
     
     bool calculate_jacobian_inverse(
-        const Eigen::VectorXd &joint_pos,
+        const Eigen::VectorXd &q,
         const std::string &link_name,
         Eigen::Matrix<double,
         Eigen::Dynamic, 6> &jacobian_inverse);
+
+    bool recursive_newton_euler(
+        const Eigen::VectorXd &q,
+        const Eigen::VectorXd &dq,
+        const Eigen::VectorXd &ddq,
+        Eigen::VectorXd &tau);
 
     bool initialised() const { return initialised_; }
 
@@ -121,7 +134,7 @@ public:
 
 private:
     static Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
-    bool check_joint_pos(const Eigen::VectorXd &joint_pos);
+    bool check_q(const Eigen::VectorXd &q);
     // printf-style: writes the message into error_ (truncated to its size) and returns false
     bool fail(const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
