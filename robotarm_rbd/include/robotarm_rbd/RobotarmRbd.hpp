@@ -26,6 +26,14 @@ public:
     std::vector<Eigen::Vector3d> dot_w;
     std::vector<Eigen::Vector3d> a_org;
     std::vector<Eigen::Vector3d> a_com;
+public:
+    void resize(size_t size){
+        T.resize(size);
+        w.resize(size);
+        dot_w.resize(size);
+        a_org.resize(size);
+        a_com.resize(size);
+    }
 };
 
 class RobotarmRbd
@@ -64,8 +72,8 @@ protected:
         Eigen::Vector3d joint_axis_in_child_ = Eigen::Vector3d::Zero();
 
     public:
-        Eigen::Isometry3d transform(double theta) const {
-            return joint_origin_in_parent_ * Eigen::AngleAxisd(theta, joint_axis_in_child_);
+        Eigen::Isometry3d transform(double q) const {
+            return joint_origin_in_parent_ * Eigen::AngleAxisd(q, joint_axis_in_child_);
         }
     };
 
@@ -115,7 +123,8 @@ public:
         const Eigen::VectorXd &q,
         const Eigen::VectorXd &dq,
         const Eigen::VectorXd &ddq,
-        Eigen::VectorXd &tau);
+        Eigen::VectorXd &tau,
+        const Eigen::Vector3d& gravity = Eigen::Vector3d(0.0, 0.0, -9.81));
 
     bool initialised() const { return initialised_; }
 
@@ -134,7 +143,7 @@ public:
 
 private:
     static Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
-    bool check_q(const Eigen::VectorXd &q);
+    bool check_input(const Eigen::VectorXd &input);
     // printf-style: writes the message into error_ (truncated to its size) and returns false
     bool fail(const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
@@ -150,6 +159,7 @@ private:
     // scratch buffers for the kinematics functions: results are built here and only copied
     // to the caller's output once complete, so a failure leaves the output untouched
     // (all or nothing). Sized in initialize(), so the rt path itself does not allocate.
+    RobotarmData data_;
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_cj_;
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_cji_;
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_jd2cd_;

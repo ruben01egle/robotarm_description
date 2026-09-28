@@ -130,6 +130,7 @@ bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description,
 	j_inv_cd2jd_ =  Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(joints_.size(), 6);
 	M_ = Eigen::MatrixXd::Zero(joints_.size(), joints_.size());
 	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(joints_.size());
+	data_.resize(joints_.size());
 
     initialised_ = true;
     return true;
@@ -141,7 +142,7 @@ bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(
 	const std::string &link_name,
 	Eigen::VectorXd &delta_q)
 {
-    if (!check_q(q)) return false;
+    if (!check_input(q)) return false;
 
 	if (!delta_x.allFinite()) {
 		return fail("delta_x contains NaN or inf");
@@ -159,7 +160,7 @@ bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
 	const std::string &link_name,
 	Eigen::Matrix<double, 6, 1> &delta_x)
 {
-	if (!check_q(q)) return false;
+	if (!check_input(q)) return false;
 
 	if (delta_q.size() != static_cast<Eigen::Index>(joints_.size())) {
 		return fail("Unexpected delta_q dimension");
@@ -179,7 +180,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_link_transform(
 	const std::string &link_name,
 	Eigen::Isometry3d &transform)
 {
-    if (!check_q(q)) return false;
+    if (!check_input(q)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		transform = Eigen::Isometry3d::Identity();
@@ -208,7 +209,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
 	const std::string &link_name,
 	Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
 {
-    if (!check_q(q)) return false;
+    if (!check_input(q)) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		jacobian.setZero(6, joints_.size());
@@ -268,10 +269,43 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	const Eigen::VectorXd &q,
 	const Eigen::VectorXd &dq,
 	const Eigen::VectorXd &ddq,
-	Eigen::VectorXd &tau)
+	Eigen::VectorXd &tau,
+	const Eigen::Vector3d& gravity)
 {
+	if (!check_input(q)) return false;
+	if (!check_input(dq)) return false;
+	if (!check_input(ddq)) return false;
+	tau.resize(joints_.size());				// if sized properly before call no allocation -> rt safe
+
 	// forward pass
-	
+	Eigen::Vector3d w_prev = Eigen::Vector3d::Zero();
+	Eigen::Vector3d dot_w_prev = Eigen::Vector3d::Zero();
+	// trick: add g as root_accel so it automatically gets propagated to every link and does not to be added during backwards pass
+	Eigen::Vector3d a_org_prev = -gravity;
+
+	Eigen::Matrix3d Rt = Eigen::Matrix3d::Zero();
+	Eigen::Vector3d r = Eigen::Vector3d::Zero();	
+	Eigen::Vector3d r_com = Eigen::Vector3d::Zero();
+	Eigen::Vector3d ax = Eigen::Vector3d::Zero();
+
+	for (size_t i=0; i<joints_.size(); ++i) {
+		data_.T[i] = joints_[i].transform(q[i]);
+		Rt =  data_.T[i].linear().transpose();		// to child system
+		r  = data_.T[i].translation();
+		r_com  = joints_[i].inertia_.com;
+		ax  = joints_[i].joint_axis_in_child_;
+
+		data_.w[i]		= Rt*w_prev + dq[i]*ax;
+		data_.dot_w[i]	= Rt*dot_w_prev + ddq[i]*ax + data_.w[i].cross(dq[i]*ax);
+		data_.a_org[i]	= Rt*(a_org_prev + dot_w_prev.cross(r) + w_prev.cross(w_prev.cross(r)));
+		data_.a_com[i]	= data_.a_org[i] + data_.dot_w[i].cross(r_com) + data_.w[i].cross(data_.w[i].cross(r_com));
+
+		w_prev = data_.w[i]; dot_w_prev = data_.dot_w[i];
+		a_org_prev = data_.a_org[i];
+	}
+
+	// backwards pass
+
     return true;
 }
 
@@ -292,18 +326,18 @@ Eigen::Isometry3d robotarm_rbd::RobotarmRbd::joint_origin_to_isometry(urdf::Join
     return T;
 }
 
-bool robotarm_rbd::RobotarmRbd::check_q(const Eigen::VectorXd &q)
+bool robotarm_rbd::RobotarmRbd::check_input(const Eigen::VectorXd &input)
 {
     if (!initialised_) {
 		return fail("Kinematics not initialised");
 	}
 
-	if (q.size() != static_cast<Eigen::Index>(joints_.size())) {
-		return fail("Unexpected q dimension");
+	if (input.size() != static_cast<Eigen::Index>(joints_.size())) {
+		return fail("Unexpected input dimension");
 	}
 
-	if (!q.allFinite()) {
-		return fail("q contains NaN or inf");
+	if (!input.allFinite()) {
+		return fail("Input contains NaN or inf");
 	}
 
 	return true;
