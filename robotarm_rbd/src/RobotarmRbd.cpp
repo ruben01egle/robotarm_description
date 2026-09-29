@@ -270,6 +270,8 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	const Eigen::VectorXd &dq,
 	const Eigen::VectorXd &ddq,
 	Eigen::VectorXd &tau,
+	const Eigen::Vector3d &F_tcp,
+    const Eigen::Vector3d &M_tcp,
 	const Eigen::Vector3d& gravity)
 {
 	if (!check_input(q)) return false;
@@ -283,17 +285,12 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	// trick: add g as root_accel so it automatically gets propagated to every link and does not to be added during backwards pass
 	Eigen::Vector3d a_org_prev = -gravity;
 
-	Eigen::Matrix3d Rt = Eigen::Matrix3d::Zero();
-	Eigen::Vector3d r = Eigen::Vector3d::Zero();	
-	Eigen::Vector3d r_com = Eigen::Vector3d::Zero();
-	Eigen::Vector3d ax = Eigen::Vector3d::Zero();
-
 	for (size_t i=0; i<joints_.size(); ++i) {
 		data_.T[i] = joints_[i].transform(q[i]);
-		Rt =  data_.T[i].linear().transpose();		// to child system
-		r  = data_.T[i].translation();
-		r_com  = joints_[i].inertia_.com;
-		ax  = joints_[i].joint_axis_in_child_;
+		Eigen::Matrix3d Rt = data_.T[i].linear().transpose();		// to child system
+		Eigen::Vector3d r = data_.T[i].translation();
+		Eigen::Vector3d r_com = joints_[i].inertia_.com;
+		Eigen::Vector3d ax = joints_[i].joint_axis_in_child_;
 
 		data_.w[i]		= Rt*w_prev + dq[i]*ax;
 		data_.dot_w[i]	= Rt*dot_w_prev + ddq[i]*ax + data_.w[i].cross(dq[i]*ax);
@@ -305,6 +302,28 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	}
 
 	// backwards pass
+	Eigen::Matrix3d R_next = tcp_.tcp_origin_in_parent_.linear();
+	Eigen::Vector3d r_next = tcp_.tcp_origin_in_parent_.translation();
+	Eigen::Vector3d F_next = F_tcp;
+	Eigen::Vector3d M_next = M_tcp;
+
+	for (int i=static_cast<int>(joints_.size())-1; i>=0; --i) {
+		double m = joints_[i].inertia_.mass;
+		Eigen::Matrix3d I_com = joints_[i].inertia_.com_inertia_in_joint;
+		Eigen::Vector3d r_com = joints_[i].inertia_.com;
+		Eigen::Vector3d ax  = joints_[i].joint_axis_in_child_;
+		Eigen::Vector3d F_dyn = m*data_.a_com[i];
+
+		data_.F[i] = F_dyn + R_next*F_next;
+		data_.M[i] = I_com*data_.dot_w[i] + data_.w[i].cross(I_com*data_.w[i]) + r_com.cross(F_dyn)
+				   + R_next*M_next + r_next.cross(R_next*F_next);
+		tau[i] = data_.M[i].dot(ax);
+
+		R_next = data_.T[i].linear();
+		r_next = data_.T[i].translation();
+		F_next = data_.F[i];
+		M_next = data_.M[i];
+	}
 
     return true;
 }

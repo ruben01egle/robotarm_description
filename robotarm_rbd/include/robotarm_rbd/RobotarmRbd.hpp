@@ -26,6 +26,8 @@ public:
     std::vector<Eigen::Vector3d> dot_w;
     std::vector<Eigen::Vector3d> a_org;
     std::vector<Eigen::Vector3d> a_com;
+    std::vector<Eigen::Vector3d> F;
+    std::vector<Eigen::Vector3d> M;
 public:
     void resize(size_t size){
         T.resize(size);
@@ -33,6 +35,8 @@ public:
         dot_w.resize(size);
         a_org.resize(size);
         a_com.resize(size);
+        F.resize(size);
+        M.resize(size);
     }
 };
 
@@ -119,11 +123,15 @@ public:
         Eigen::Matrix<double,
         Eigen::Dynamic, 6> &jacobian_inverse);
 
+    // F_tcp, M_tcp: external wrench at the TCP, expressed in the TCP frame.
+    // Convention: force/moment exerted ON the environment (not the reaction measured by a F/T sensor)
     bool recursive_newton_euler(
         const Eigen::VectorXd &q,
         const Eigen::VectorXd &dq,
         const Eigen::VectorXd &ddq,
         Eigen::VectorXd &tau,
+        const Eigen::Vector3d &F_tcp = Eigen::Vector3d::Zero(),
+        const Eigen::Vector3d &M_tcp = Eigen::Vector3d::Zero(),
         const Eigen::Vector3d& gravity = Eigen::Vector3d(0.0, 0.0, -9.81));
 
     bool initialised() const { return initialised_; }
