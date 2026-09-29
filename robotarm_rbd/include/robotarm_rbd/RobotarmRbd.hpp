@@ -51,6 +51,8 @@ public:
     };
 
     // valid is false if the link has no <inertial>, the other members then keep their defaults.
+    // initialize() accepts either all links with an <inertial> or none (kinematics only model), and
+    // refuses an <inertial> that is not physically plausible.
     struct InertialParams {
         double mass = 0;
         Eigen::Vector3d com = Eigen::Vector3d::Zero();                      // CoM position in joint frame
@@ -125,6 +127,8 @@ public:
 
     // F_tcp, M_tcp: external wrench at the TCP, expressed in the TCP frame.
     // Convention: force/moment exerted ON the environment (not the reaction measured by a F/T sensor)
+    // gravity: physical gravity vector in the root link frame.
+    // Fails on a kinematics only model (no <inertial>), unless gravity, dq and ddq all zero (pure TCP wrench).
     bool recursive_newton_euler(
         const Eigen::VectorXd &q,
         const Eigen::VectorXd &dq,
@@ -151,7 +155,7 @@ public:
 
 private:
     static Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
-    bool check_input(const Eigen::VectorXd &input);
+    bool check_input(const Eigen::VectorXd &input, const char *name);
     // printf-style: writes the message into error_ (truncated to its size) and returns false
     bool fail(const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
@@ -163,6 +167,8 @@ private:
     char error_[256] = "";
     // true once initialize() has run through; every kinematics function refuses to work before that
     bool initialised_ = false;
+    // true if every link has an <inertial>, false for a kinematics only model
+    bool inertia_available_ = false;
 
     // scratch buffers for the kinematics functions: results are built here and only copied
     // to the caller's output once complete, so a failure leaves the output untouched
@@ -172,7 +178,7 @@ private:
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_cji_;
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_jd2cd_;
     Eigen::Matrix<double, Eigen::Dynamic, 6> j_inv_cd2jd_;
-    Eigen::MatrixXd M_;
+    Eigen::MatrixXd jtj_damped_;   // JᵀJ + λ²I of the damped least squares
     Eigen::LDLT<Eigen::MatrixXd> ldlt_;
 
     Config config_;

@@ -9,11 +9,19 @@
 #include <iomanip>
 #include <sstream>
 
+namespace
+{
+const char * implausible_inertial(
+	double mass,
+	const Eigen::Matrix3d & I,
+	const Eigen::Vector3d & com,
+	const Eigen::Vector4d & quat);
+}
 
-
-bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description, const Config &config)
+bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot_description, const Config &config)
 {
     initialised_ = false;
+    inertia_available_ = false;
     joints_.clear();
 
     if (!std::isfinite(config.lambda) || config.lambda < 0.0) {
@@ -58,6 +66,8 @@ bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description,
 	tcp_.parent_link_name_ = tcp_joint_urdf->parent_link_name;
 	tcp_.tcp_origin_in_parent_ = joint_origin_to_isometry(tcp_joint_urdf);
 
+	size_t n_inertial = 0;
+	const char * link_without_inertial = nullptr;
     for (size_t i = 0; i < joints_urdf.size()-1; ++i) {
 		urdf::JointConstSharedPtr joint_urdf = joints_urdf[i];
 
@@ -114,21 +124,36 @@ bool robotarm_rbd::RobotarmRbd::initialize(const std::string &robot_description,
 			I_com << in.ixx, in.ixy, in.ixz,
 					 in.ixy, in.iyy, in.iyz,
 					 in.ixz, in.iyz, in.izz;
+			const char * reason = implausible_inertial(in.mass, I_com, joint.inertia_.com,
+				Eigen::Vector4d(r.w, r.x, r.y, r.z));
+			if (reason) {
+				return fail("Link %s has an implausible inertial: %s", child_urdf->name.c_str(), reason);
+			}
 			// I_joint = R * I_com * R^T: rotates tensor from com axes into joint axes (L = R I_com R^T ω)
 			// reference point stays at com
 			joint.inertia_.com_inertia_in_joint = R_com * I_com * R_com.transpose();
 			joint.inertia_.valid = true;
+			++n_inertial;
+		} else if (!link_without_inertial) {
+			link_without_inertial = child_urdf->name.c_str();
 		}
 
 		joints_.push_back(joint);
     }
+
+	// all or nothing: a model with only some inertias would give plausible looking but wrong torques
+	if (n_inertial != 0 && n_inertial != joints_.size()) {
+		return fail("Link %s has no inertial, but other links have one (all or none)",
+			link_without_inertial);
+	}
+	inertia_available_ = n_inertial == joints_.size();
 
 	// init heap member
 	j_cj_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
 	j_cji_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
 	j_jd2cd_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
 	j_inv_cd2jd_ =  Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(joints_.size(), 6);
-	M_ = Eigen::MatrixXd::Zero(joints_.size(), joints_.size());
+	jtj_damped_ = Eigen::MatrixXd::Zero(joints_.size(), joints_.size());
 	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(joints_.size());
 	data_.resize(joints_.size());
 
@@ -142,7 +167,7 @@ bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(
 	const std::string &link_name,
 	Eigen::VectorXd &delta_q)
 {
-    if (!check_input(q)) return false;
+    if (!check_input(q, "q")) return false;
 
 	if (!delta_x.allFinite()) {
 		return fail("delta_x contains NaN or inf");
@@ -160,7 +185,7 @@ bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
 	const std::string &link_name,
 	Eigen::Matrix<double, 6, 1> &delta_x)
 {
-	if (!check_input(q)) return false;
+	if (!check_input(q, "q")) return false;
 
 	if (delta_q.size() != static_cast<Eigen::Index>(joints_.size())) {
 		return fail("Unexpected delta_q dimension");
@@ -180,7 +205,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_link_transform(
 	const std::string &link_name,
 	Eigen::Isometry3d &transform)
 {
-    if (!check_input(q)) return false;
+    if (!check_input(q, "q")) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		transform = Eigen::Isometry3d::Identity();
@@ -209,7 +234,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
 	const std::string &link_name,
 	Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian)
 {
-    if (!check_input(q)) return false;
+    if (!check_input(q, "q")) return false;
 
 	if (link_name == joints_.front().parent_link_name_) {
 		jacobian.setZero(6, joints_.size());
@@ -250,13 +275,13 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(
 
 	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
 	// J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ -> (JᵀJ + λ²I)J⁺ = Jᵀ as MX = Jᵀ with:
-	// M = (JᵀJ + λ²I)
+	// M = (JᵀJ + λ²I) (called jtj_damped_)
 	// X = J⁺
-	M_.noalias() = j_cji_.transpose() * j_cji_;
-	M_.diagonal().array() += config_.lambda * config_.lambda;
+	jtj_damped_.noalias() = j_cji_.transpose() * j_cji_;
+	jtj_damped_.diagonal().array() += config_.lambda * config_.lambda;
 
 	// factor M once, and check that it worked
-	ldlt_.compute(M_);
+	ldlt_.compute(jtj_damped_);
 	if (ldlt_.info() != Eigen::Success) {
 		return fail("Factorization failed");
 	}
@@ -274,9 +299,17 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
     const Eigen::Vector3d &M_tcp,
 	const Eigen::Vector3d& gravity)
 {
-	if (!check_input(q)) return false;
-	if (!check_input(dq)) return false;
-	if (!check_input(ddq)) return false;
+	if (!check_input(q, "q")) return false;
+	if (!check_input(dq, "dq")) return false;
+	if (!check_input(ddq, "ddq")) return false;
+	if (!F_tcp.allFinite() || !M_tcp.allFinite() || !gravity.allFinite()) {
+		return fail("F_tcp, M_tcp or gravity contains NaN or inf");
+	}
+	// without inertia every link is massless: the torques would only contain the TCP wrench, which is
+	// only correct if nothing else contributes
+	if (!inertia_available_ && !(gravity.isZero(0.0) && dq.isZero(0.0) && ddq.isZero(0.0))) {
+		return fail("Not all links have a valid inertia");
+	}
 	tau.resize(joints_.size());				// if sized properly before call no allocation -> rt safe
 
 	// forward pass
@@ -287,10 +320,10 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 
 	for (size_t i=0; i<joints_.size(); ++i) {
 		data_.T[i] = joints_[i].transform(q[i]);
-		Eigen::Matrix3d Rt = data_.T[i].linear().transpose();		// to child system
-		Eigen::Vector3d r = data_.T[i].translation();
-		Eigen::Vector3d r_com = joints_[i].inertia_.com;
-		Eigen::Vector3d ax = joints_[i].joint_axis_in_child_;
+		const Eigen::Matrix3d Rt = data_.T[i].linear().transpose();		// to child system
+		const Eigen::Vector3d r = data_.T[i].translation();
+		const Eigen::Vector3d& r_com = joints_[i].inertia_.com;
+		const Eigen::Vector3d& ax = joints_[i].joint_axis_in_child_;
 
 		data_.w[i]		= Rt*w_prev + dq[i]*ax;
 		data_.dot_w[i]	= Rt*dot_w_prev + ddq[i]*ax + data_.w[i].cross(dq[i]*ax);
@@ -308,11 +341,11 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	Eigen::Vector3d M_next = M_tcp;
 
 	for (int i=static_cast<int>(joints_.size())-1; i>=0; --i) {
-		double m = joints_[i].inertia_.mass;
-		Eigen::Matrix3d I_com = joints_[i].inertia_.com_inertia_in_joint;
-		Eigen::Vector3d r_com = joints_[i].inertia_.com;
-		Eigen::Vector3d ax  = joints_[i].joint_axis_in_child_;
-		Eigen::Vector3d F_dyn = m*data_.a_com[i];
+		const double m = joints_[i].inertia_.mass;
+		const Eigen::Matrix3d& I_com = joints_[i].inertia_.com_inertia_in_joint;
+		const Eigen::Vector3d& r_com = joints_[i].inertia_.com;
+		const Eigen::Vector3d& ax  = joints_[i].joint_axis_in_child_;
+		const Eigen::Vector3d F_dyn = m*data_.a_com[i];
 
 		data_.F[i] = F_dyn + R_next*F_next;
 		data_.M[i] = I_com*data_.dot_w[i] + data_.w[i].cross(I_com*data_.w[i]) + r_com.cross(F_dyn)
@@ -345,18 +378,18 @@ Eigen::Isometry3d robotarm_rbd::RobotarmRbd::joint_origin_to_isometry(urdf::Join
     return T;
 }
 
-bool robotarm_rbd::RobotarmRbd::check_input(const Eigen::VectorXd &input)
+bool robotarm_rbd::RobotarmRbd::check_input(const Eigen::VectorXd &input, const char *name)
 {
     if (!initialised_) {
-		return fail("Kinematics not initialised");
+		return fail("Not initialised");
 	}
 
 	if (input.size() != static_cast<Eigen::Index>(joints_.size())) {
-		return fail("Unexpected input dimension");
+		return fail("Unexpected %s dimension", name);
 	}
 
 	if (!input.allFinite()) {
-		return fail("Input contains NaN or inf");
+		return fail("%s contains NaN or inf", name);
 	}
 
 	return true;
@@ -443,6 +476,8 @@ std::string robotarm_rbd::RobotarmRbd::chain_table_log() const
     }
     row(os, "tcp", "(fixed)", tcp_.parent_link_name_, tcp_.tcp_name_);
     os << "\n";
+    os << "inertia: " << (inertia_available_ ? "all links (dynamics available)"
+                                             : "none (kinematics only)") << "\n";
 
     return os.str();
 }
@@ -455,3 +490,38 @@ bool robotarm_rbd::RobotarmRbd::fail(const char *fmt, ...)
 	va_end(args);
 	return false;
 }
+
+namespace
+{
+// Physical plausibility of an URDF <inertial>, the tensor as given in the URDF (about the CoM, inertial
+// frame axes). Returns nullptr if it is plausible, otherwise the reason.
+//  - everything finite, mass >= 0
+//  - tensor positive semidefinite (principal moments >= 0)
+//  - triangle inequality of the principal moments, I_a + I_b >= I_c: I_a + I_b - I_c = 2∫c² dm >= 0
+//    for any real mass distribution
+//  - no mass means no inertia
+// The tolerance is relative to the trace, CAD exports round their values.
+const char * implausible_inertial(double mass, const Eigen::Matrix3d & I, const Eigen::Vector3d & com,
+	const Eigen::Vector4d & quat)
+{
+	if (!std::isfinite(mass) || !I.allFinite() || !com.allFinite() || !quat.allFinite()) {
+		return "not finite";
+	}
+	if (mass < 0.0) {
+		return "negative mass";
+	}
+	const double tol = 1e-6 * std::abs(I.trace());
+	if (mass == 0.0) {
+		return I.isZero(0.0) ? nullptr : "inertia without mass";
+	}
+	const Eigen::Vector3d moments = Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d>(
+		I, Eigen::EigenvaluesOnly).eigenvalues();  // ascending
+	if (moments[0] < -tol) {
+		return "inertia tensor not positive semidefinite";
+	}
+	if (moments[0] + moments[1] < moments[2] - tol) {
+		return "principal moments violate the triangle inequality";
+	}
+	return nullptr;
+}
+}  // namespace

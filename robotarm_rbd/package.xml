@@ -13,6 +13,8 @@
   <test_depend>ament_index_cpp</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <!-- reference implementation for the dynamics tests only, users of the library do not need it -->
+  <test_depend>pinocchio</test_depend>
 
   <depend>rclcpp</depend>
   <depend>pluginlib</depend>

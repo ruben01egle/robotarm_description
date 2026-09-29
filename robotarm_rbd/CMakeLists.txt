@@ -144,6 +144,18 @@ if(BUILD_TESTING)
   target_include_directories(robotarm_rbd_test PRIVATE test)
   target_link_libraries(robotarm_rbd_test ${PROJECT_NAME}_core)
 
+  # Inverse dynamics, kinematics and Jacobian of the real robot against Pinocchio. Pinocchio is only
+  # needed here (test_depend), it is not found or linked outside of BUILD_TESTING. Like
+  # robotarm_rbd_test without rclcpp.
+  find_package(pinocchio REQUIRED)
+  ament_add_gtest(rnea_pinocchio_test test/rnea_pinocchio_test.cpp)
+  target_include_directories(rnea_pinocchio_test PRIVATE test)
+  target_link_libraries(rnea_pinocchio_test
+    ${PROJECT_NAME}_core
+    pinocchio::pinocchio
+    ament_index_cpp::ament_index_cpp
+  )
+
   # joint limit policy of the jog tool (pure function, no ROS needed)
   ament_add_gtest(joint_limiter_test tools/cartesian_jog/joint_limiter_test.cpp)
   target_link_libraries(joint_limiter_test Eigen3::Eigen)

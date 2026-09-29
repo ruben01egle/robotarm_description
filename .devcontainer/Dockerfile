@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rviz2 \
     ros-${ROS_DISTRO}-kinematics-interface \
     ros-${ROS_DISTRO}-eigen3-cmake-module \
+    ros-${ROS_DISTRO}-pinocchio \
     libeigen3-dev \
     python3-matplotlib \
     && rm -rf /var/lib/apt/lists/*

@@ -1,4 +1,5 @@
-// The real-time path of Kinematics must not allocate when the caller passes pre-sized outputs.
+// The real-time path of Kinematics and RobotarmRbd (incl. the inverse dynamics) must not allocate when
+// the caller passes pre-sized outputs.
 //
 // Eigen can turn heap allocations into failed assertions (EIGEN_RUNTIME_NO_MALLOC, see
 // eigen_malloc_guard.hpp). The guard has to be compiled into the code under test, so this target
@@ -114,6 +115,30 @@ TEST_F(MallocTest, TheGuardTripsWhenAnOutputHasToBeResized)
     // and the guard is switched off again afterwards
     Eigen::VectorXd allowed = Eigen::VectorXd::Zero(6);
     EXPECT_EQ(allowed.size(), 6);
+}
+
+TEST(MallocTestRnea, PresizedInverseDynamicsDoesNotAllocate)
+{
+    // the synthetic URDF of MallocTest has no inertias, the real robot has
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(test_utils::real_urdf(), {})) << rbd.last_error();
+    std::mt19937 rng(4711);
+    Eigen::VectorXd tau = Eigen::VectorXd::Zero(6);
+    const Eigen::Vector3d F(1, 2, 3), M(0.1, 0.2, 0.3);
+
+    for (int n = 0; n < 30; ++n) {
+        const Eigen::VectorXd q = test_utils::random_vector(rng, 6, 1.0);
+        const Eigen::VectorXd dq = test_utils::random_vector(rng, 6, 2.0);
+        const Eigen::VectorXd ddq = test_utils::random_vector(rng, 6, 5.0);
+        bool ok = false;
+        EXPECT_FALSE(allocates([&] {ok = rbd.recursive_newton_euler(q, dq, ddq, tau, F, M);}));
+        EXPECT_TRUE(ok) << rbd.last_error();
+    }
+
+    // negative control: an unsized tau has to be allocated
+    const Eigen::VectorXd zero = Eigen::VectorXd::Zero(6);
+    Eigen::VectorXd tau_unsized;
+    EXPECT_TRUE(allocates([&] {rbd.recursive_newton_euler(zero, zero, zero, tau_unsized);}));
 }
 
 TEST_F(MallocTest, ATemporaryFromAPlainProductAssignmentIsCaught)
