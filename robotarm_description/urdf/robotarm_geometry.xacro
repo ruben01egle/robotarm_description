@@ -790,42 +790,42 @@
             <parent link="Base_1"/>
             <child link="Shoulder_1"/>
             <axis xyz="0 0 1"/>
-            <limit effort="1" velocity="1" lower="-3.054326190990077" upper="3.054326190990077"/>
+            <limit effort="8.0" velocity="3.14" lower="-3.054326190990077" upper="3.054326190990077"/>
         </joint>
         <joint name="axis2" type="revolute">
             <origin xyz="0.025 0 0.35" rpy="-1.5707963 0 0"/>
             <parent link="Shoulder_1"/>
             <child link="Elbow_1"/>
             <axis xyz="0 0 1"/>
-            <limit effort="1" velocity="1" lower="-2.792526803190927" upper="0.3490658503988659"/>
+            <limit effort="35" velocity="2.5" lower="-2.792526803190927" upper="0.3490658503988659"/>
         </joint>
         <joint name="axis3" type="revolute">
             <origin xyz="0.3 0 0.0185" rpy="0 0 0"/>
             <parent link="Elbow_1"/>
             <child link="Forearm_1"/>
             <axis xyz="0 0 1"/>
-            <limit effort="1" velocity="1" lower="-2.0943951023931953" upper="2.356194490192345"/>
+            <limit effort="15" velocity="2.5" lower="-2.0943951023931953" upper="2.356194490192345"/>
         </joint>
         <joint name="axis4" type="revolute">
             <origin xyz="0 -0.015 0" rpy="-1.5707963 0 -1.5707963"/>
             <parent link="Forearm_1"/>
             <child link="Stage4_1"/>
             <axis xyz="0 0 1"/>
-            <limit effort="1" velocity="1" lower="-3.054326190990077" upper="3.054326190990077"/>
+            <limit effort="5.0" velocity="2.5" lower="-3.054326190990077" upper="3.054326190990077"/>
         </joint>
         <joint name="axis5" type="revolute">
             <origin xyz="0 0 0.252" rpy="1.5707963 0 0"/>
             <parent link="Stage4_1"/>
             <child link="Stage5_1"/>
             <axis xyz="0 0 1"/>
-            <limit effort="1" velocity="1" lower="-2.0071286397934787" upper="2.0071286397934787"/>
+            <limit effort="4.0" velocity="2.5" lower="-2.0071286397934787" upper="2.0071286397934787"/>
         </joint>
         <joint name="axis6" type="revolute">
             <origin xyz="0 0 0" rpy="-1.5707963 0 0"/>
             <parent link="Stage5_1"/>
             <child link="Stage6_1"/>
             <axis xyz="0 0 1"/>
-            <limit effort="1" velocity="1" lower="-3.054326190990077" upper="3.054326190990077"/>
+            <limit effort="4.0" velocity="2.5" lower="-3.054326190990077" upper="3.054326190990077"/>
         </joint>
         <link name="tcp"/>
         <joint name="tcp_joint" type="fixed">

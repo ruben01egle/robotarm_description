@@ -1,0 +1,43 @@
+logging:
+  mode: default
+  console_level: INFO
+  file_level: DEBUG
+  file_path: postprocess.log
+  clear_existing_handlers: true
+  delay_file_creation: false
+names:
+  parts:
+    Base_1:
+      name: base
+    Stage1_1:
+      name: stage1
+    Stage2_1:
+      name: stage2
+    Stage3_1:
+      name: stage3
+    Stage4_1:
+      name: stage4
+    Stage5_1:
+      name: stage5
+    Stage6_1:
+      name: stage6
+  mates:
+    axis1:
+      effort: 8.0
+      velocity: 3.14
+    axis2:
+      effort: 35.0
+      velocity: 2.5
+    axis3:
+      effort: 15.0
+      velocity: 2.5
+    axis4:
+      effort: 5.0
+      velocity: 2.5
+    axis5:
+      effort: 4.0
+      velocity: 2.5
+    axis6:
+      effort: 4.0
+      velocity: 2.5
+

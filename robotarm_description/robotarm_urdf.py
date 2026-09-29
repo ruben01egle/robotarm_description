@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from onshape_robotics_toolkit import ORTConfig
 from onshape_robotics_toolkit.connect import Client
 from onshape_robotics_toolkit.formats.urdf import URDFSerializer
 from onshape_robotics_toolkit.formats.xacro import convert_urdf_to_xacro
@@ -23,7 +26,7 @@ PACKAGE_NAME = "robotarm_description"
 STRIP_ROOT_LINK = False
 
 # Link the tcp frame attaches to, and its offset (meters) along that link's own Z axis.
-TIP_LINK = "Stage6_1"
+TIP_LINK = "stage6"
 TCP_OFFSET_Z = 0.148
 
 URDF_PATH = "output/robotarm.urdf"
@@ -31,6 +34,11 @@ MESH_DIR = "output/meshes"
 XACRO_PATH = "output/robotarm.urdf.xacro"
 
 setup_default_logging(file_path="robotarm.log", console_level="INFO")
+
+# Joint overrides (effort/velocity limits, names) - must be loaded before the robot is built.
+ORT_CONFIG_PATH = Path("ORT.yaml")
+if ORT_CONFIG_PATH.exists():
+    ORTConfig.load(ORT_CONFIG_PATH)
 
 client = Client(env=".env")
 cad = CAD.from_url(DOCUMENT_URL, client=client, max_depth=0)
