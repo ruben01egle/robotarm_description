@@ -3,7 +3,8 @@
 Rigid body math for the 6-DOF robot arm, taken straight from the URDF (joint origins, axes, limits and
 link inertias): forward kinematics, geometric Jacobian, its damped least squares inverse and the inverse
 dynamics (recursive Newton-Euler, RNEA). It works for any serial chain of revolute joints, not only for
-6 of them.
+6 of them. An exchangeable tool behind the flange is taken from the URDF as well: the tcp is wherever the
+tool puts it, and the mass of the tool is folded into the last moving link (see "Tool behind the flange").
 
 The package builds two libraries:
 
@@ -62,18 +63,35 @@ them during setup and not from the rt loop.
 | `get_joint_names(std::vector<std::string> &)` | the N revolute joints in chain order                        |
 | `get_joint_limits(std::vector<Limits> &)`     | `min`, `max` [rad], `velocity` [rad/s], `effort` per joint, same order |
 | `get_link_names(std::vector<std::string> &)`  | the N+1 links of the moving chain: the root link and the child link of every joint |
-| `get_tcp_link_name(std::string &)`    | the child link of the last (fixed) joint                            |
+| `get_tcp_link_name(std::string &)`    | always `tcp`, the link of that name behind the flange               |
 
 The order is the order of `joint_pos`: entry `i` is joint `i`, which connects link `i` and link `i+1`
-(link 0 is the root link). The tcp is neither a joint nor in the link list, but it is a valid `link_name`
-for the kinematics functions like any link.
+(link 0 is the root link). Flange and tcp are neither joints nor in the link list, but both are valid
+`link_name`s for the kinematics functions like any link. The links of a tool between them are not: they
+are folded away (see "Tool behind the flange").
 
 ## URDF constraints (checked in `RobotarmRbd::initialize`)
 
-- Serial chain: every link has at most one child. The chain has at least one revolute joint in front of
-  the tcp joint; there is no upper limit on the number of joints.
-- All joints but the last are `revolute` with valid limits (`lower < upper`, `velocity > 0`, `effort > 0`).
-  The last joint is `fixed` and its child is the tcp link. The tcp link may be empty
+The URDF has two parts: the moving chain from the root link to the flange, and the tool behind the
+flange. The names `flange_joint`, `flange` and `tcp` are fixed, they are the contract with the exporter
+(`robotarm_description`: the arm ends in the flange, `urdf/tools/<tool>.xacro` hangs the tool and the
+tcp on it).
+
+```
+root ─axis1─▶ link1 ─axis2─▶ ... ─axisN─▶ linkN ─flange_joint─▶ flange ─▶ tool links ... ─▶ tcp
+└──────────── moving chain: serial, revolute only ──────────┘  └──── tool: any tree, folded ────┘
+```
+
+- **Moving chain**: serial, every link up to the flange has exactly one child. Every joint in front of
+  `flange_joint` is `revolute` with valid limits (`lower < upper`, `velocity > 0`, `effort > 0`), at least
+  one of them; there is no upper limit on the number of joints.
+- **Flange**: the chain must reach a joint named `flange_joint`. It is `fixed` and its child is the link
+  `flange`. Running out of links before, a joint of another type, or another child name is an error.
+- **Tool**: everything behind the flange. It may branch (two jaws), and its joints may be of any type: a
+  joint that is not fixed is taken at its zero position, where its transform is just its `<origin>`. So a
+  gripper with moving jaws is fine for the dynamics, only its jaw motion is not modelled. Without a tool
+  (`tools/none.xacro`) the tcp sits directly on the flange.
+- **TCP**: a link named `tcp` must be somewhere behind the flange. It may be empty
   (`<link name="tcp"/>`); it is only a frame.
 - Every revolute joint has a non-zero `<axis>`. Its length does not matter, it is normalised on parsing.
 - Joint origins are arbitrary: any translation and rotation, also for the first joint. (An earlier
@@ -82,7 +100,10 @@ for the kinematics functions like any link.
 - `<inertial>` of the moved links (the child of every revolute joint): **all or none**. Without any, the
   model is kinematics only and the inverse dynamics refuses to work (see "Inverse dynamics"). A model
   where only some links have one is rejected, it would give plausible looking but wrong torques. The
-  root link and the tcp link are not moved by any joint, their `<inertial>` is ignored.
+  root link is not moved by any joint, its `<inertial>` is ignored. The links behind the flange
+  (flange, tool, tcp) do not count for this rule: an `<inertial>` there is folded into the last moving
+  link, a missing one adds nothing. On a kinematics only arm the tool inertia is ignored too, otherwise the
+  last link would be the only one with a mass.
 - Every given `<inertial>` must be physically plausible: mass `>= 0`, the tensor positive semidefinite,
   the principal moments fulfil the triangle inequality `I_a + I_b >= I_c`, and no inertia without mass
   (tolerance: `1e-6 · trace`). A point mass (zero tensor) and a massless link (zero mass and tensor)
@@ -99,18 +120,23 @@ A_k(q_k) = O_k · R(a_k, q_k)            (Joint::transform)
 ```
 
 `O_k` (`joint_origin_in_parent_`) and the normalised `a_k` (`joint_axis_in_child_`) are read once in
-`initialize`. The pose of link `k` and of the tcp in the root link frame are then
+`initialize`. The pose of link `k`, of the flange and of the tcp in the root link frame are then
 
 ```
 link_k = A_1(q_1) · A_2(q_2) · ... · A_k(q_k)
-tcp    = link_N · O_tcp                 (O_tcp: origin of the fixed tcp joint, tcp_origin_in_parent_)
+flange = link_N · O_flange              (O_flange: origin of flange_joint, flange_origin_in_parent_)
+tcp    = flange · O_tcp                 (O_tcp: tcp in the flange frame, tcp_origin_in_flange_)
 ```
+
+`O_tcp` is the product of all fixed transforms on the way from the flange to the tcp, through the tool
+(identity without a tool). It is computed once in `initialize`, so a tool costs nothing at run time.
 
 | link_name                       | result of `calculate_link_transform` |
 |---------------------------------|--------------------------------------|
 | root link                       | identity                             |
 | child link of joint `k` (1..N)  | `link_k`                             |
-| tcp                             | `link_N · O_tcp`                     |
+| flange                          | `link_N · O_flange`                  |
+| tcp                             | `link_N · O_flange · O_tcp`          |
 
 The rotation `R(a_k, q_k)` is about an axis through the origin of frame `k`, so it does not move that
 origin: the position of joint `k` is the translation of `link_k`, whatever `q_k` is.
@@ -403,8 +429,12 @@ the tcp frame. A force/torque sensor at the flange measures the reaction, the op
 like one more link without mass after the last one, so the backward pass starts with
 
 ```
-R_next = rot(O_tcp),  p_next = trans(O_tcp),  f_next = F_tcp,  M_next = M_tcp
+R_next = rot(T_tcp),  p_next = trans(T_tcp),  f_next = F_tcp,  M_next = M_tcp
 ```
+
+where `T_tcp = O_flange · O_tcp` is the tcp in the frame of the **last moving link**
+(`tcp_origin_in_last_mov_link_`), flange and tool included. Using only `O_tcp` (tcp in the flange frame)
+here would lose the flange offset in the lever arm.
 
 and the first iteration adds to the last link `f = R F_tcp` and `M = R M_tcp + p × (R F_tcp)`: the force
 turned into its frame, and the moment turned plus the lever moment of the force.
@@ -445,6 +475,150 @@ turned into its frame, and the moment turned plus the lever moment of the force.
 | f_i, n_i                    | `data_.F[i]`, `data_.M[i]`                        |
 | f_{N+1}, n_{N+1}            | `F_tcp`, `M_tcp`                                  |
 | τ_i = n_iᵀ ẑ_i              | `tau[i] = data_.M[i].dot(ax)`                     |
+
+## Tool behind the flange: folding its inertia into the last moving link
+
+### 1. Why fold
+
+The tool is screwed onto the flange, and the flange is part of the last moving link (link N, `Stage6_1`).
+As long as no tool joint moves, link N, flange and all tool links are **one rigid body**. The RNEA needs
+exactly one `(m, c, I_c)` per moving link (section 5 of the inverse dynamics), so the tool is replaced by
+nothing more than a heavier link N: same total mass, same centre of mass, same inertia. For a rigid tool
+this is exact for every motion, not an approximation. Pinocchio does the same with links on fixed joints,
+which is why `rnea_pinocchio_test` can check the folding.
+
+`initialize` does it in one walk over the tool, after the moving chain has been parsed and the "all or
+none" rule checked:
+
+```
+for every link behind the flange (flange, tool links, tcp), with its pose T_k = (R_k, p_k) in link N:
+    if it is "tcp":         T_tcp = T_k                       → section 10 of the inverse dynamics
+    if it has <inertial>:   add it to three running sums     → 3. and 5. below
+afterwards: replace the inertia of link N by the combined one
+```
+
+### 2. Walking the tool tree
+
+A tool can branch (two jaws on one base), so the "follow the one child" loop of the moving chain does not
+work here. Instead `initialize` keeps a to-do list of `(link, T_k)`: take one entry, handle it, put its
+children on the list with `T_child = T_k · O_joint`, until the list is empty. It starts with
+`(flange, O_flange)`, so every `T_k` is already the pose in link N and nothing has to be converted
+later. Every link is visited once; the order does not matter, the results are sums.
+
+A joint that is not fixed (a gripper jaw) is taken at its zero position: its transform is `O_joint`, the
+same as for a fixed joint, so the walk does not need to know the joint type.
+
+### 3. Each body in the frame of link N
+
+Every `<inertial>` is first read like the one of a moving link (`read_inertial`, section 5): mass `m_k`, CoM
+`c_k,local` and the tensor about the CoM in its link axes. Then `T_k` carries it into link N:
+
+```
+c_k = R_k · c_k,local + p_k            the CoM is a point: rotate and shift
+I_k = R_k · I_k,local · R_kᵀ           the tensor only changes its axes, the reference point stays the CoM
+```
+
+Link N itself is body 0, with `T_0 = identity`.
+
+### 4. Mass and centre of mass
+
+```
+m = Σ m_k                c = Σ m_k c_k / m
+```
+
+`Σ m_k c_k` is the first moment of mass; the CoM is the mass weighted mean of the CoMs of the bodies.
+
+### 5. Steiner: an inertia tensor about another point
+
+The tensors `I_k` cannot simply be added: each one is about the CoM of its own body, and tensors about
+different points mean different things. Only tensors about **the same point** add up. The parallel axis
+theorem (Steiner) moves a tensor from the CoM to any other point.
+
+The inertia tensor about a point P sums over all mass elements, with `r` the vector from P to the element:
+
+```
+I_P = ∫ (|r|² E − r rᵀ) dm            e.g. I_xx = ∫ (y² + z²) dm = ∫ (distance from the x axis)² dm
+                                           I_xy = −∫ x y dm
+```
+
+Let C be the CoM and `d` the vector from P to C. Every `r` splits into `r = d + s`, with `s` from the CoM
+to the element. Inserting:
+
+```
+I_P = ∫ (|d|² E − d dᵀ) dm  +  ∫ (|s|² E − s sᵀ) dm  +  terms linear in s
+    =     m (|d|² E − d dᵀ) +           I_C           +  0
+```
+
+The terms linear in `s` contain `∫ s dm`, which is zero, because C is the centre of mass. So
+
+```
+I_P = I_C + S(m, d)       with  S(m, d) = m (|d|² E − d dᵀ)
+
+                ⎡ d_y² + d_z²   −d_x d_y      −d_x d_z    ⎤
+    S(m, d) = m ⎢ −d_x d_y      d_x² + d_z²   −d_y d_z    ⎥
+                ⎣ −d_x d_z      −d_y d_z      d_x² + d_y² ⎦
+```
+
+- `S(m, d)` is the tensor of a point mass `m` at `d`. The diagonal is the familiar `m · distance²` from
+  that axis, the off-diagonal entries are the products of inertia a body gets by sitting off-centre.
+- `S` is positive semidefinite, so the CoM is the point with the smallest inertia; moving away from it
+  only adds.
+- The theorem connects the **CoM** with another point. Between two arbitrary points P₁ and P₂ it does not
+  hold directly; go P₁ → C → P₂.
+- In the code: `steiner(m, d)` in `RobotarmRbd.cpp`.
+
+### 6. Folding: two Steiner moves via the origin of link N
+
+The common point is the origin O of link N. Every body is moved there, with `d = c_k` (the vector from O
+to its CoM, section 3), and summed:
+
+```
+I_O = Σ ( I_k + S(m_k, c_k) )
+```
+
+That is the inertia of the combined body about O. The combined body has mass `m` and CoM `c` (section 4),
+so Steiner holds for it too, `I_O = I_c + S(m, c)`, and solved for the tensor about its own CoM:
+
+```
+I_c = I_O − S(m, c)
+```
+
+This is the "back" move: from O to the CoM, subtract. The new inertia of link N is `(m, c, I_c)`, the same
+kind of values the RNEA has used all along.
+
+Why the detour via O instead of directly `I_c = Σ ( I_k + S(m_k, c_k − c) )`? Both give the same tensor
+(multiply it out), but the direct form needs `c` before the first body is added, so the tool would have to
+be walked twice. Via O three running sums are enough, filled during the one walk:
+
+| sum | code |
+|-----|------|
+| `Σ m_k` | `m_sum` |
+| `Σ m_k c_k` | `mc_sum` |
+| `Σ ( I_k + S(m_k, c_k) )` | `I_origin` |
+
+All three start with link N itself. `I_O − S(m, c)` subtracts two larger numbers, but at arm scale (kg,
+0.1 m) the loss is around 1e-16; the test checks the result against the direct form to 1e-14. A massless
+link N with a massless tool stays all zero (no division by `m = 0`).
+
+### 7. Example
+
+From `ToolFolding.ARotatedToolBodyIsFoldedIntoTheLastMovingLink`: a pendulum about the y axis, link1 with
+2 kg at `(0.5, 0, 0)` and `I_yy = 0.03`. The tool body has 1 kg, its frame sits at `(1, 0, 0)` in link1,
+rotated by Rz(90°), its CoM is `(0.1, 0, 0)` in that frame and its tensor `diag(0.004, 0.002, 0.003)`.
+
+- section 3: CoM `(1, 0.1, 0)` in link1, tensor `diag(0.002, 0.004, 0.003)` (Rz(90°) swaps x and y)
+- section 4: `m = 3`, `c = (2 · (0.5, 0, 0) + 1 · (1, 0.1, 0)) / 3 = (0.667, 0.033, 0)`
+- the pendulum only feels `I_yy` about its axis: `I_axis = Σ (I_yy,k + m_k x_k²) = 0.03 + 2 · 0.25 +
+  0.004 + 1 · 1 = 1.534 kg m²`, the gravity moment `Σ m_k x_k · g cos q = 2.0 · g cos q`, so
+  `τ = 1.534 q̈ − 2.0 · 9.81 · cos q`. The test checks this and the full tensor of section 6.
+
+### 8. Limits
+
+- Exact for a rigid tool. Moving jaws are taken at their zero position, the error of the jaw stroke is
+  ignored.
+- The tool from the URDF is all there is: a grasped object is not in it. That needs a payload at run time.
+- After `initialize`, `joints_.back().inertia_` holds the combined body. The values of link N alone are
+  not kept.
 
 ## Cartesian jogging (`cartesian_jog`), a tool
 
@@ -532,9 +706,9 @@ runnable directly from `build/robotarm_rbd/` (with `--gtest_filter=...`):
 
 | executable                | links rclcpp | covers                                                                                  |
 |---------------------------|--------------|-----------------------------------------------------------------------------------------|
-| `kinematics_test`         | yes | URDF parsing (origins, normalised axes, limits, chain length), link transforms against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule), delta conversions and input validation, round-trip accuracy of the damped inverse |
-| `robotarm_rbd_test`       | no  | lifecycle and error messages of the ROS free `RobotarmRbd` (fails to link if it pulls in ROS), `<inertial>` parsing and rotation `R I Rᵀ`, the inertia rules (all or none, implausible tensors rejected), inverse dynamics solved by hand: pendulum `τ = (I + mL²) q̈ − m g L cos q`, TCP wrench in a rotated tcp frame, vertical first axis, refusal without inertia |
-| `rnea_pinocchio_test`     | no  | the real robot against Pinocchio: same joints and masses, static gravity (also against `−Σ m J_comᵀ g` from our FK), mass matrix from unit accelerations (symmetric, positive definite, = `crba`), 500 random (q, q̇, q̈) = `rnea`, TCP wrench = `rnea` with `fext` (sign flipped, moved to the joint 6 frame) and = `Jᵀ w`, FK and Jacobian of every link = Pinocchio |
+| `kinematics_test`         | yes | URDF parsing (origins, normalised axes, limits, chain length, flange, tcp through a tool), link transforms of every link, flange and tcp against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule, incl. missing / wrong flange and missing tcp), delta conversions and input validation, round-trip accuracy of the damped inverse |
+| `robotarm_rbd_test`       | no  | lifecycle and error messages of the ROS free `RobotarmRbd` (fails to link if it pulls in ROS), `<inertial>` parsing and rotation `R I Rᵀ`, the inertia rules (all or none, implausible tensors rejected), inverse dynamics solved by hand: pendulum `τ = (I + mL²) q̈ − m g L cos q`, TCP wrench in a rotated tcp frame split into flange and tcp, vertical first axis, refusal without inertia. Tool folding by hand: a rotated tool body (mass, CoM, tensor against the direct Steiner form, torques), a branched tool with a prismatic jaw, a tool without inertia, a tool on a kinematics only arm, an implausible tool inertia, the wrench at a tcp on the tool |
+| `rnea_pinocchio_test`     | no  | the real robot against Pinocchio, once as it is and once with a gripper with mass between flange and tcp (`real_urdf_with_test_tool`): same joints, masses, CoMs and tensors (for the last link: our folding against Pinocchio's merge), the gripper adding its mass to the last link only, static gravity (also against `−Σ m J_comᵀ g` from our FK), mass matrix from unit accelerations (symmetric, positive definite, = `crba`), 500 random (q, q̇, q̈) = `rnea`, TCP wrench = `rnea` with `fext` (sign flipped, moved to the joint 6 frame) and = `Jᵀ w`, FK and Jacobian of every link, the flange and the tcp = Pinocchio |
 | `kinematics_malloc_test`  | yes | the rt path (kinematics and inverse dynamics) does not allocate with pre-sized outputs (Eigen's malloc guard), with negative controls so the guard cannot be silently off |
 | `joint_limiter_test`      | no  | the joint limit policy of the jog tool (`tools/cartesian_jog/JointLimiter.hpp`): velocity and position limits, uniform scaling, joints at / beyond a limit, invalid input |
 
@@ -542,13 +716,16 @@ The round-trip test asserts the exact bound of the damped inverse, `|J⁺J dq �
 (same for `J J⁺`), not an arbitrary tolerance. With fewer than 6 joints only the `dq` round trip is
 bounded, with more than 6 only the `dx` round trip. The kinematics tests run on the real robot and on
 synthetic URDFs (`test/test_utils.hpp`): two generated from a DH table (the one of the robot, and one with
-arbitrary twists, offsets and negative lengths) and random chains of 1, 3, 6 and 7 joints with arbitrary
-origins and oblique axes of any length. The synthetic URDFs have no `<inertial>` (kinematics only).
-`test/real_urdf.hpp` loads the real URDF without rclcpp.
+arbitrary twists, offsets and negative lengths), the robot's DH table with a branched tool (prismatic jaw,
+tcp offset and rotated on the tool), and random chains of 1, 3, 6 and 7 joints with arbitrary origins and
+oblique axes of any length. All end in `flange_joint` → `flange` → `tcp`. The synthetic URDFs have no
+`<inertial>` (kinematics only). The reference FK walks from a link up to the root, so it covers the tool
+tree as well. `test/real_urdf.hpp` loads the real URDF without rclcpp.
 
-The Pinocchio comparison agrees to about 1e-14 Nm (torques up to ~30 Nm); the tests allow 1e-9. Pinocchio
-merges the inertia of links on fixed joints into their parent: the tcp link has none, the root link goes
-to the (fixed) universe, so both models describe the same bodies.
+The Pinocchio comparison agrees to about 1e-14 Nm (torques up to ~40 Nm with the gripper); the tests
+allow 1e-9. Pinocchio merges the inertia of links on fixed joints into their parent: flange, tool and tcp
+go to joint 6, exactly what our parser folds into the last moving link, and the root link goes to the
+(fixed) universe, so both models describe the same bodies.
 
 `kinematics_malloc_test` compiles `src/Kinematics.cpp` and `src/RobotarmRbd.cpp` itself instead of
 linking the libraries, because Eigen's malloc guard has to be compiled into the code under test.

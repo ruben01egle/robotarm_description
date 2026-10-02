@@ -15,7 +15,8 @@ def generate_launch_description():
 
     # value_type=str keeps the URDF from being YAML-parsed as a parameter value
     robot_description = ParameterValue(
-        Command([FindExecutable(name='xacro'), ' ', xacro_file]),
+        Command([FindExecutable(name='xacro'), ' ', xacro_file,
+                 ' tool:=', LaunchConfiguration('tool')]),
         value_type=str)
 
     use_rviz = LaunchConfiguration('rviz')
@@ -69,6 +70,10 @@ def generate_launch_description():
             'lambda', default_value='0.01',
             description='damping of the inverse Jacobian: larger is safer near singularities, '
                         'smaller is more accurate'),
+        DeclareLaunchArgument(
+            'tool', default_value='none',
+            description='tool on the flange: file name in robotarm_description/urdf/tools/ '
+                        'without .xacro'),
         robot_state_publisher_node,
         cartesian_jog_node,
         jog_gui_node,

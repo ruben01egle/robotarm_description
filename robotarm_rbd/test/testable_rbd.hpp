@@ -13,6 +13,7 @@ class TestableRbd : public robotarm_rbd::RobotarmRbd
 {
 public:
     using RobotarmRbd::joints_;
+    using RobotarmRbd::flange_;
     using RobotarmRbd::tcp_;
 };
 

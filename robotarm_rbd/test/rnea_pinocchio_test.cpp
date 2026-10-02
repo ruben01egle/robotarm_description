@@ -6,7 +6,11 @@
 //
 // Model correspondence: Pinocchio builds joints universe(0), axis1(1) .. axis6(6). Pinocchio joint j
 // is our joints_[j-1]. It merges the inertia of links on fixed joints into their parent: the root link
-// Base_1 goes to the universe (irrelevant for a fixed base, as for us), the tcp link has no inertia.
+// Base_1 goes to the universe (irrelevant for a fixed base, as for us), and flange, tool and tcp go to
+// joint 6, which is exactly what our parser folds into the last moving link.
+//
+// Every test runs twice: on the real robot as it is ("none", tcp on the flange) and with a gripper
+// that has mass between flange and tcp ("tool", see real_urdf_with_test_tool).
 
 #include <gtest/gtest.h>
 
@@ -34,14 +38,14 @@ using Jacobian = Eigen::Matrix<double, 6, Eigen::Dynamic>;
 
 const Eigen::Vector3d default_gravity(0.0, 0.0, -9.81);
 
-class RneaVsPinocchio : public ::testing::Test
+class RneaVsPinocchio : public ::testing::TestWithParam<std::string>
 {
 protected:
     void SetUp() override
     {
         std::string urdf;
         try {
-            urdf = test_utils::real_urdf();
+            urdf = GetParam() == "tool" ? test_utils::real_urdf_with_test_tool() : test_utils::real_urdf();
         } catch (const std::exception & e) {
             FAIL() << e.what();
         }
@@ -120,9 +124,13 @@ protected:
     std::mt19937 rng_;
 };
 
+INSTANTIATE_TEST_SUITE_P(
+    Tools, RneaVsPinocchio, ::testing::Values("none", "tool"),
+    [](const ::testing::TestParamInfo<std::string> & info) {return info.param;});
+
 }  // namespace
 
-TEST_F(RneaVsPinocchio, BothModelsHaveTheSameJointsAndMasses)
+TEST_P(RneaVsPinocchio, BothModelsHaveTheSameJointsAndMasses)
 {
     ASSERT_EQ(model_.nq, n_);
     ASSERT_EQ(model_.nv, n_);
@@ -131,13 +139,31 @@ TEST_F(RneaVsPinocchio, BothModelsHaveTheSameJointsAndMasses)
     for (Eigen::Index i = 0; i < n_; ++i) {
         const size_t j = static_cast<size_t>(i) + 1;
         EXPECT_EQ(model_.names[j], joint_names_[static_cast<size_t>(i)]) << "joint order";
-        EXPECT_NEAR(model_.inertias[j].mass(), rbd_.joints_[static_cast<size_t>(i)].inertia_.mass, 1e-12);
-        our_mass += rbd_.joints_[static_cast<size_t>(i)].inertia_.mass;
+        // mass, CoM and tensor about the CoM, all in the joint frame: for the last link that is
+        // the folded tool against Pinocchio's own merge
+        const auto & ours = rbd_.joints_[static_cast<size_t>(i)].inertia_;
+        EXPECT_NEAR(model_.inertias[j].mass(), ours.mass, 1e-12);
+        EXPECT_LT((model_.inertias[j].lever() - ours.com).norm(), 1e-12);
+        EXPECT_LT((model_.inertias[j].inertia().matrix() - ours.com_inertia_in_joint).cwiseAbs().maxCoeff(), 1e-12)
+            << "ours\n" << ours.com_inertia_in_joint << "\npin\n" << model_.inertias[j].inertia().matrix();
+        our_mass += ours.mass;
     }
     EXPECT_GT(our_mass, 1.0) << "the real robot must come with its inertias";
 }
 
-TEST_F(RneaVsPinocchio, StaticGravityTorques)
+TEST_P(RneaVsPinocchio, TheToolMassIsFoldedIntoTheLastLink)
+{
+    // premise of the "tool" runs: the gripper really adds its 0.8 kg to the last link
+    test_utils::TestableRbd plain;
+    ASSERT_TRUE(plain.initialize(test_utils::real_urdf(), {})) << plain.last_error();
+    const double added = rbd_.joints_.back().inertia_.mass - plain.joints_.back().inertia_.mass;
+    EXPECT_NEAR(added, GetParam() == "tool" ? 0.8 : 0.0, 1e-12);
+    for (size_t i = 0; i + 1 < rbd_.joints_.size(); ++i) {
+        EXPECT_EQ(rbd_.joints_[i].inertia_.mass, plain.joints_[i].inertia_.mass) << "only the last link";
+    }
+}
+
+TEST_P(RneaVsPinocchio, StaticGravityTorques)
 {
     const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n_);
     double max_err = 0.0;
@@ -177,7 +203,7 @@ TEST_F(RneaVsPinocchio, StaticGravityTorques)
     std::printf("static gravity: max |tau - tau_pinocchio| = %.3g Nm\n", max_err);
 }
 
-TEST_F(RneaVsPinocchio, MassMatrixFromUnitAccelerations)
+TEST_P(RneaVsPinocchio, MassMatrixFromUnitAccelerations)
 {
     const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n_);
     const Eigen::Vector3d no_gravity = Eigen::Vector3d::Zero();
@@ -205,7 +231,7 @@ TEST_F(RneaVsPinocchio, MassMatrixFromUnitAccelerations)
     std::printf("mass matrix: max |M - M_crba| = %.3g kg m^2\n", max_err);
 }
 
-TEST_F(RneaVsPinocchio, FullDynamicsForRandomStates)
+TEST_P(RneaVsPinocchio, FullDynamicsForRandomStates)
 {
     double max_err = 0.0, max_tau = 0.0;
     for (int n = 0; n < 500; ++n) {
@@ -226,7 +252,7 @@ TEST_F(RneaVsPinocchio, FullDynamicsForRandomStates)
         max_err, max_tau);
 }
 
-TEST_F(RneaVsPinocchio, TcpWrench)
+TEST_P(RneaVsPinocchio, TcpWrench)
 {
     // Our F_tcp/M_tcp: exerted BY the robot ON the environment, at the tcp, in the tcp frame.
     // Pinocchio's fext[j]: exerted ON the body of joint j BY the environment, in the joint j frame,
@@ -275,9 +301,10 @@ TEST_F(RneaVsPinocchio, TcpWrench)
     }
 }
 
-TEST_F(RneaVsPinocchio, ForwardKinematicsAndJacobian)
+TEST_P(RneaVsPinocchio, ForwardKinematicsAndJacobian)
 {
     std::vector<std::string> links = link_names_;
+    links.push_back("flange");
     links.push_back(tcp_name_);
     for (int n = 0; n < 50; ++n) {
         const Eigen::VectorXd q = n == 0 ? Eigen::VectorXd::Zero(n_) : random_q();

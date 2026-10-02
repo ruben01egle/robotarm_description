@@ -36,8 +36,9 @@ using test_utils::UrdfSpec;
 constexpr double kPositionTol = 1e-12;
 constexpr double kRotationTol = 1e-12;
 
-// "real", "baseline" (DH table of the robot), "generic" (arbitrary DH table) or "random<dof>"
-// (random origins and axes, see make_random_spec)
+// "real", "baseline" (DH table of the robot), "tool" (baseline with a branched tool between flange
+// and tcp), "generic" (arbitrary DH table) or "random<dof>" (random origins and axes, see
+// make_random_spec)
 std::string urdf_for(const std::string & robot)
 {
     if (robot == "real") {
@@ -45,6 +46,9 @@ std::string urdf_for(const std::string & robot)
     }
     if (robot == "baseline") {
         return test_utils::make_spec(test_utils::robot_dh()).str();
+    }
+    if (robot == "tool") {
+        return test_utils::make_tool_spec(test_utils::robot_dh()).str();
     }
     if (robot == "generic") {
         return test_utils::make_spec(test_utils::generic_dh()).str();
@@ -100,8 +104,9 @@ void expect_jacobian_matches_reference(
 }
 
 // ---------------------------------------------------------------------------------------------
-// tests that run on all robots: the real one, one with the same DH table, a generic DH one, and
-// random non-DH chains of 1, 3, 6 and 7 joints
+// tests that run on all robots: the real one, one with the same DH table (also with a tool), a
+// generic DH one, and random non-DH chains of 1, 3, 6 and 7 joints. The links checked are the root,
+// every moving link, the flange and the tcp.
 // ---------------------------------------------------------------------------------------------
 
 class RobotTest : public ::testing::TestWithParam<std::string>
@@ -129,7 +134,8 @@ protected:
 };
 
 INSTANTIATE_TEST_SUITE_P(
-    Robots, RobotTest, ::testing::Values("real", "baseline", "generic", "random1", "random3", "random6", "random7"),
+    Robots, RobotTest,
+    ::testing::Values("real", "baseline", "tool", "generic", "random1", "random3", "random6", "random7"),
     [](const ::testing::TestParamInfo<std::string> & info) {return info.param;});
 
 // --- 1. forward kinematics ---------------------------------------------------------------------
@@ -414,7 +420,7 @@ TEST(Singularity, DampingKeepsTheJointDeltasBoundedAtTheWristSingularity)
 // 1. initialize(): parsed values
 // ---------------------------------------------------------------------------------------------
 
-TEST(Initialize, RealUrdfIsParsedIntoSixJointsAndTheTcp)
+TEST(Initialize, RealUrdfIsParsedIntoSixJointsTheFlangeAndTheTcp)
 {
     // replaces the old manual check: initialize() prints the joint table on success
     std::string urdf;
@@ -427,8 +433,9 @@ TEST(Initialize, RealUrdfIsParsedIntoSixJointsAndTheTcp)
     ASSERT_TRUE(core.initialize(urdf, {})) << core.last_error();
 
     ASSERT_EQ(core.joints_.size(), 6u);
+    EXPECT_EQ(core.flange_.parent_link_name_, core.joints_.back().child_link_name_);
     EXPECT_EQ(core.tcp_.tcp_name_, "tcp");
-    EXPECT_EQ(core.tcp_.parent_link_name_, core.joints_.back().child_link_name_);
+    EXPECT_EQ(core.tcp_.parent_link_name_, "flange");
     for (size_t i = 0; i < 6; ++i) {
         const auto & joint = core.joints_[i];
         EXPECT_NEAR(joint.joint_axis_in_child_.norm(), 1.0, 1e-15);
@@ -468,7 +475,7 @@ TEST(Initialize, OriginsAxesAndLimitsAreParsedFromTheUrdf)
         spec.joints[0].upper = 2.0;
         spec.joints[0].velocity = 0.7;
         spec.joints[0].effort = 5.0;
-        const size_t dof = spec.joints.size() - 1;
+        const size_t dof = spec.joints.size() - 2;  // minus flange and tcp joint
 
         test_utils::TestableRbd core;
         ASSERT_TRUE(core.initialize(spec.str(), {})) << core.last_error();
@@ -484,10 +491,16 @@ TEST(Initialize, OriginsAxesAndLimitsAreParsedFromTheUrdf)
             EXPECT_EQ(joint.parent_link_name_, spec.link_name(i));
             EXPECT_EQ(joint.child_link_name_, spec.link_name(i + 1));
         }
+        // flange on the last moving link, tcp on the flange, and both composed for the dynamics
+        const Eigen::Isometry3d flange = test_utils::isometry(spec.origins[dof]);
+        const Eigen::Isometry3d tcp_in_flange = test_utils::isometry(spec.origins[dof + 1]);
+        EXPECT_EQ(core.flange_.parent_link_name_, spec.link_name(dof));
+        EXPECT_TRUE(core.flange_.flange_origin_in_parent_.matrix().isApprox(flange.matrix(), 1e-12));
         EXPECT_EQ(core.tcp_.tcp_name_, "tcp");
-        EXPECT_EQ(core.tcp_.parent_link_name_, spec.link_name(dof));
-        EXPECT_TRUE(core.tcp_.tcp_origin_in_parent_.matrix().isApprox(
-            test_utils::isometry(spec.origins.back()).matrix(), 1e-12));
+        EXPECT_EQ(core.tcp_.parent_link_name_, "flange");
+        EXPECT_TRUE(core.tcp_.tcp_origin_in_flange_.matrix().isApprox(tcp_in_flange.matrix(), 1e-12));
+        EXPECT_TRUE(core.tcp_.tcp_origin_in_last_mov_link_.matrix().isApprox(
+            (flange * tcp_in_flange).matrix(), 1e-12));
         EXPECT_EQ(core.joints_[0].limits_.min, -1.0);
         EXPECT_EQ(core.joints_[0].limits_.max, 2.0);
         EXPECT_EQ(core.joints_[0].limits_.velocity, 0.7);
@@ -517,6 +530,35 @@ TEST(Initialize, OriginsAxesAndLimitsAreParsedFromTheUrdf)
         EXPECT_EQ(limits[0].effort, 5.0);
         EXPECT_EQ(limits[dof - 1].velocity, core.joints_[dof - 1].limits_.velocity);
     }
+}
+
+TEST(Initialize, TheTcpOfAToolIsFoundBehindTheFlangeAndComposedThroughIt)
+{
+    // the tool branches and has a prismatic jaw: neither adds a joint, the tcp hangs on the tool
+    const UrdfSpec spec = test_utils::make_tool_spec(test_utils::robot_dh());
+    test_utils::TestableRbd core;
+    ASSERT_TRUE(core.initialize(spec.str(), {})) << core.last_error();
+    const test_utils::ReferenceFk ref(spec.str());
+
+    std::vector<std::string> names;
+    ASSERT_TRUE(core.get_joint_names(names));
+    EXPECT_EQ(names, (std::vector<std::string>{"axis1", "axis2", "axis3", "axis4", "axis5", "axis6"}));
+
+    // relative poses are the same for every q, the reference takes the jaw at zero
+    const Eigen::VectorXd q = Eigen::VectorXd::Zero(6);
+    const Eigen::Isometry3d last = ref.link(q, spec.link_name(6));
+    const Eigen::Isometry3d flange = ref.link(q, "flange");
+    const Eigen::Isometry3d tcp = ref.link(q, "tcp");
+    EXPECT_TRUE(core.tcp_.tcp_origin_in_last_mov_link_.matrix().isApprox(
+        (last.inverse() * tcp).matrix(), 1e-12));
+    EXPECT_TRUE(core.tcp_.tcp_origin_in_flange_.matrix().isApprox((flange.inverse() * tcp).matrix(), 1e-12));
+    EXPECT_FALSE(core.tcp_.tcp_origin_in_flange_.isApprox(Eigen::Isometry3d::Identity()))
+        << "test premise: the tool moves the tcp away from the flange";
+
+    // the tool links are folded away, they are no link of the model
+    Eigen::Isometry3d T;
+    EXPECT_FALSE(core.calculate_link_transform(q, "tool_base", T));
+    EXPECT_FALSE(core.calculate_link_transform(q, "tool_jaw1", T));
 }
 
 TEST(Initialize, TheNumberOfJointsFollowsTheUrdf)
@@ -682,14 +724,20 @@ std::vector<InvalidCase> invalid_cases()
         c.push_back({std::move(name), std::move(mutate), false, "", {}});
     };
 
-    // chain structure: serial, at least one revolute joint in front of the tcp joint
+    // chain structure: serial up to the flange, at least one revolute joint in front of it
     add("BranchingChain", [](UrdfSpec & s) {s.branch = true;});
-    add("OnlyTheTcpJoint", [](UrdfSpec & s) {
-        while (s.joints.size() > 1) {remove_joint(s, 0);}
+    add("OnlyTheFlangeAndTcpJoints", [](UrdfSpec & s) {
+        while (s.joints.size() > 2) {remove_joint(s, 0);}
     });
     add("NoJoints", [](UrdfSpec & s) {
         while (!s.joints.empty()) {remove_joint(s, 0);}
     });
+
+    // flange and tcp: fixed names, the flange joint fixed
+    add("NoFlangeJoint", [](UrdfSpec & s) {s.flange_joint = "wrist_joint";});
+    add("FlangeJointWithAnotherChild", [](UrdfSpec & s) {s.flange_link = "mount";});
+    add("FlangeJointNotFixed", [](UrdfSpec & s) {s.joints[s.joints.size() - 2].type = "revolute";});
+    add("NoTcpBehindTheFlange", [](UrdfSpec & s) {s.tcp_link = "tool0";});
 
     // a revolute joint needs a direction to rotate about
     add("ZeroAxis", [](UrdfSpec & s) {s.joints[2].axis = Eigen::Vector3d::Zero();});
@@ -698,7 +746,7 @@ std::vector<InvalidCase> invalid_cases()
     add("ContinuousJoint", [](UrdfSpec & s) {s.joints[1].type = "continuous";});
     add("PrismaticJoint", [](UrdfSpec & s) {s.joints[1].type = "prismatic";});
     add("FixedJointInsideTheChain", [](UrdfSpec & s) {s.joints[2].type = "fixed";});
-    add("TcpJointNotFixed", [](UrdfSpec & s) {s.joints.back().type = "revolute";});
+    // (a tcp joint that is not fixed is valid now: tool joints are taken at zero, see the "tool" robot)
     add("MissingLimits", [](UrdfSpec & s) {s.joints[0].has_limit = false;});
     add("LowerEqualsUpper", [](UrdfSpec & s) {s.joints[3].lower = s.joints[3].upper = 0.5;});
     add("LowerAboveUpper", [](UrdfSpec & s) {s.joints[3].lower = 1.0; s.joints[3].upper = -1.0;});

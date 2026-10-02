@@ -83,11 +83,20 @@ protected:
         }
     };
 
+    class Flange {
+    public:
+        std::string joint_name_ = "flange_joint";
+        std::string flange_name_ = "flange";
+        std::string parent_link_name_;
+        Eigen::Isometry3d flange_origin_in_parent_ = Eigen::Isometry3d::Identity();
+    };
+
     class TCP {
     public:
-        std::string tcp_name_;
-        std::string parent_link_name_;
-        Eigen::Isometry3d tcp_origin_in_parent_ = Eigen::Isometry3d::Identity();
+        std::string tcp_name_ = "tcp";
+        std::string parent_link_name_ = "flange";
+        Eigen::Isometry3d tcp_origin_in_flange_ = Eigen::Isometry3d::Identity();
+        Eigen::Isometry3d tcp_origin_in_last_mov_link_ = Eigen::Isometry3d::Identity();
     };
 
 public:
@@ -161,6 +170,7 @@ private:
 
 protected:
     std::vector<Joint> joints_;
+    Flange flange_;
     TCP tcp_;
 
 private:
@@ -169,6 +179,8 @@ private:
     bool initialised_ = false;
     // true if every link has an <inertial>, false for a kinematics only model
     bool inertia_available_ = false;
+    // mass of the tool folded into the last moving link, only for chain_table_log()
+    double tool_mass_ = 0.0;
 
     // scratch buffers for the kinematics functions: results are built here and only copied
     // to the caller's output once complete, so a failure leaves the output untouched

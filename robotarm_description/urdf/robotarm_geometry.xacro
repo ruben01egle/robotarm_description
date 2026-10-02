@@ -827,11 +827,11 @@
             <axis xyz="0 0 1"/>
             <limit effort="4.0" velocity="2.5" lower="-3.054326190990077" upper="3.054326190990077"/>
         </joint>
-        <link name="tcp"/>
-        <joint name="tcp_joint" type="fixed">
+        <link name="flange"/>
+        <joint name="flange_joint" type="fixed">
             <origin xyz="0 0 0.148" rpy="0 0 0"/>
             <parent link="Stage6_1"/>
-            <child link="tcp"/>
+            <child link="flange"/>
         </joint>
     </xacro:macro>
 </robot>

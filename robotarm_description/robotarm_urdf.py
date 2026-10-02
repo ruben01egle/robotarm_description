@@ -25,9 +25,11 @@ PACKAGE_NAME = "robotarm_description"
 # Onshape and Base is the real root link - stripping it would delete real robot geometry.
 STRIP_ROOT_LINK = False
 
-# Link the tcp frame attaches to, and its offset (meters) along that link's own Z axis.
+# Link the flange frame attaches to, and the flange pose in that link's frame (meters / radians).
+# Tools mount on the flange (urdf/tools/<tool>.xacro), the tcp comes from the tool file.
 TIP_LINK = "stage6"
-TCP_OFFSET_Z = 0.148
+FLANGE_XYZ = (0.0, 0.0, 0.148)
+FLANGE_RPY = (0.0, 0.0, 0.0)
 
 URDF_PATH = "output/robotarm.urdf"
 MESH_DIR = "output/meshes"
@@ -64,5 +66,6 @@ convert_urdf_to_xacro(
     mesh_dir=MESH_DIR,
     strip_root_link=STRIP_ROOT_LINK,
     tip_link=TIP_LINK,
-    tcp_offset_z=TCP_OFFSET_Z,
+    flange_xyz=FLANGE_XYZ,
+    flange_rpy=FLANGE_RPY,
 )

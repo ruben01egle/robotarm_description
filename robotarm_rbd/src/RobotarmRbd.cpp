@@ -16,13 +16,24 @@ const char * implausible_inertial(
 	const Eigen::Matrix3d & I,
 	const Eigen::Vector3d & com,
 	const Eigen::Vector4d & quat);
+
+const char * read_inertial(const urdf::Inertial & in, robotarm_rbd::RobotarmRbd::InertialParams & out);
+
+// Steiner (parallel axis) term: inertia of a point mass m at d about the origin, m (|d|² E − d dᵀ)
+Eigen::Matrix3d steiner(double m, const Eigen::Vector3d & d)
+{
+	return m * (d.squaredNorm() * Eigen::Matrix3d::Identity() - d * d.transpose());
+}
 }
 
 bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot_description, const Config &config)
 {
     initialised_ = false;
     inertia_available_ = false;
+    tool_mass_ = 0.0;
     joints_.clear();
+    flange_ = Flange();
+    tcp_ = TCP();
 
     if (!std::isfinite(config.lambda) || config.lambda < 0.0) {
         return fail("lambda must be finite and >= 0, got %g", config.lambda);
@@ -39,37 +50,48 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
 	if (!link_urdf) {
 		return fail("URDF has no root link");
 	}
-	std::vector<urdf::JointConstSharedPtr> joints_urdf;
+	std::vector<urdf::JointConstSharedPtr> moving_joints_urdf;
+	urdf::JointConstSharedPtr flange_joint_urdf;
 
-	while (!link_urdf->child_joints.empty()) {
+	// collect the moving joints root -> flange
+	while (!flange_joint_urdf) {
+		if (link_urdf->child_joints.empty()) {
+			return fail("Chain ends at link %s without a joint %s", link_urdf->name.c_str(),
+				flange_.joint_name_.c_str());
+		}
 		if (link_urdf->child_joints.size() != 1) {
 			return fail("Link %s has multiple children links", link_urdf->name.c_str());
 		}
 		urdf::JointConstSharedPtr joint = link_urdf->child_joints[0];
-        joints_urdf.push_back(joint);
-        link_urdf = model->getLink(joint->child_link_name);
+		if (joint->name == flange_.joint_name_) {
+			flange_joint_urdf = joint;
+		} else {
+			moving_joints_urdf.push_back(joint);
+		}
+		link_urdf = model->getLink(joint->child_link_name);
 		if (!link_urdf) {
 			return fail("Joint %s references unknown child link %s",
 				joint->name.c_str(), joint->child_link_name.c_str());
 		}
 	}
+	// link_urdf is now the flange link, the root of the tool subtree
 
-	if (joints_urdf.size() < 2) {
-		return fail("URDF chain has %zu joint(s), expected more", joints_urdf.size());
+	if (flange_joint_urdf->type != urdf::Joint::FIXED) {
+		return fail("Flange joint %s is not fixed", flange_joint_urdf->name.c_str());
+	}
+	if (flange_joint_urdf->child_link_name != flange_.flange_name_) {
+		return fail("Flange joint %s has child link %s, expected %s", flange_joint_urdf->name.c_str(),
+			flange_joint_urdf->child_link_name.c_str(), flange_.flange_name_.c_str());
+	}
+	if (moving_joints_urdf.empty()) {
+		return fail("URDF chain has no joint before %s", flange_joint_urdf->name.c_str());
 	}
 
-	urdf::JointConstSharedPtr tcp_joint_urdf = joints_urdf.back();
-	if (tcp_joint_urdf->type != urdf::Joint::FIXED) {
-		return fail("TCP-Joint %s has unexpected type", tcp_joint_urdf->name.c_str());
-	}
-	tcp_.tcp_name_ = tcp_joint_urdf->child_link_name;
-	tcp_.parent_link_name_ = tcp_joint_urdf->parent_link_name;
-	tcp_.tcp_origin_in_parent_ = joint_origin_to_isometry(tcp_joint_urdf);
-
+	// parse data of moving joints
 	size_t n_inertial = 0;
 	const char * link_without_inertial = nullptr;
-    for (size_t i = 0; i < joints_urdf.size()-1; ++i) {
-		urdf::JointConstSharedPtr joint_urdf = joints_urdf[i];
+    for (size_t i = 0; i < moving_joints_urdf.size(); ++i) {
+		urdf::JointConstSharedPtr joint_urdf = moving_joints_urdf[i];
 
 		Joint joint;
 		if (joint_urdf->type != urdf::Joint::REVOLUTE) {
@@ -112,27 +134,10 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
 		// inertia of the moved body, only if the child link has an <inertial>
 		const urdf::LinkConstSharedPtr child_urdf = model->getLink(joint_urdf->child_link_name);
 		if (child_urdf->inertial) {
-			const urdf::Inertial & in = *child_urdf->inertial;
-			const urdf::Rotation & r = in.origin.rotation;
-			joint.inertia_.mass = in.mass;
-			// vector to com in joint-frame
-			joint.inertia_.com = Eigen::Vector3d(in.origin.position.x, in.origin.position.y,
-												  in.origin.position.z);
-			Eigen::Matrix3d R_com = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
-			// inertia tensor of com in com-frame
-			Eigen::Matrix3d I_com;
-			I_com << in.ixx, in.ixy, in.ixz,
-					 in.ixy, in.iyy, in.iyz,
-					 in.ixz, in.iyz, in.izz;
-			const char * reason = implausible_inertial(in.mass, I_com, joint.inertia_.com,
-				Eigen::Vector4d(r.w, r.x, r.y, r.z));
+			const char * reason = read_inertial(*child_urdf->inertial, joint.inertia_);
 			if (reason) {
 				return fail("Link %s has an implausible inertial: %s", child_urdf->name.c_str(), reason);
 			}
-			// I_joint = R * I_com * R^T: rotates tensor from com axes into joint axes (L = R I_com R^T ω)
-			// reference point stays at com
-			joint.inertia_.com_inertia_in_joint = R_com * I_com * R_com.transpose();
-			joint.inertia_.valid = true;
 			++n_inertial;
 		} else if (!link_without_inertial) {
 			link_without_inertial = child_urdf->name.c_str();
@@ -147,6 +152,70 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
 			link_without_inertial);
 	}
 	inertia_available_ = n_inertial == joints_.size();
+
+	// parse data of flange
+	flange_.parent_link_name_ = flange_joint_urdf->parent_link_name;
+	flange_.flange_origin_in_parent_ = joint_origin_to_isometry(flange_joint_urdf);
+
+	// walk the tool subtree behind the flange and every <inertial> is
+	// folded into the last moving link. Tool joints that are not fixed are taken at their zero position
+	InertialParams & last = joints_.back().inertia_;
+	// sums over all bodies (last moving link + tool links), about the origin of the last moving link:
+	// mass, first moment of mass, inertia
+	double m_sum = last.mass;
+	Eigen::Vector3d mc_sum = last.mass * last.com;
+	Eigen::Matrix3d I_origin = last.com_inertia_in_joint + steiner(last.mass, last.com);
+	bool tcp_found = false;
+
+	std::vector<std::pair<urdf::LinkConstSharedPtr, Eigen::Isometry3d>> todo;
+	todo.emplace_back(link_urdf, flange_.flange_origin_in_parent_);  // link_urdf is the flange link
+	while (!todo.empty()) {
+		const auto [link, T] = todo.back();
+		todo.pop_back();
+
+		if (link->name == tcp_.tcp_name_) {
+			tcp_found = true;
+			tcp_.tcp_origin_in_last_mov_link_ = T;
+			tcp_.tcp_origin_in_flange_ = flange_.flange_origin_in_parent_.inverse() * T;
+		}
+
+		// without inertia on the arm (kinematics only) the tool inertia is ignored, it would break all or none
+		if (inertia_available_ && link->inertial) {
+			InertialParams body;
+			const char * reason = read_inertial(*link->inertial, body);
+			if (reason) {
+				return fail("Link %s has an implausible inertial: %s", link->name.c_str(), reason);
+			}
+			// into the axes and origin of the last moving link
+			const Eigen::Matrix3d R = T.linear();
+			const Eigen::Vector3d com = T * body.com;
+			m_sum += body.mass;
+			mc_sum += body.mass * com;
+			I_origin += R * body.com_inertia_in_joint * R.transpose() + steiner(body.mass, com);
+		}
+
+		for (const auto & joint : link->child_joints) {
+			const urdf::LinkConstSharedPtr child = model->getLink(joint->child_link_name);
+			if (!child) {
+				return fail("Joint %s references unknown child link %s",
+					joint->name.c_str(), joint->child_link_name.c_str());
+			}
+			todo.emplace_back(child, T * joint_origin_to_isometry(joint));
+		}
+	}
+
+	if (!tcp_found) {
+		return fail("No link %s behind link %s", tcp_.tcp_name_.c_str(), flange_.flange_name_.c_str());
+	}
+
+	tool_mass_ = m_sum - last.mass;
+
+	// back from the origin to the combined CoM. A massless last link with a massless tool stays all zero.
+	if (m_sum > 0.0) {
+		last.mass = m_sum;
+		last.com = mc_sum / m_sum;
+		last.com_inertia_in_joint = I_origin - steiner(m_sum, last.com);
+	}
 
 	// init heap member
 	j_cj_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
@@ -221,8 +290,14 @@ bool robotarm_rbd::RobotarmRbd::calculate_link_transform(
 		}
 	}
 
+	T = T * flange_.flange_origin_in_parent_;	// Flange is not in joints_, so it comes after the loop
+	if (link_name == flange_.flange_name_) {
+		transform = T;
+		return true;
+	}
+
 	if (link_name == tcp_.tcp_name_) {  // TCP is not in joints_, so it comes after the loop
-		transform = T * tcp_.tcp_origin_in_parent_;
+		transform = T * tcp_.tcp_origin_in_flange_;
 		return true;
 	}
 
@@ -335,8 +410,8 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	}
 
 	// backwards pass
-	Eigen::Matrix3d R_next = tcp_.tcp_origin_in_parent_.linear();
-	Eigen::Vector3d r_next = tcp_.tcp_origin_in_parent_.translation();
+	Eigen::Matrix3d R_next = tcp_.tcp_origin_in_last_mov_link_.linear();
+	Eigen::Vector3d r_next = tcp_.tcp_origin_in_last_mov_link_.translation();
 	Eigen::Vector3d F_next = F_tcp;
 	Eigen::Vector3d M_next = M_tcp;
 
@@ -446,11 +521,18 @@ bool robotarm_rbd::RobotarmRbd::get_tcp_link_name(std::string& name)
 
 std::string robotarm_rbd::RobotarmRbd::chain_table_log() const
 {
-    size_t w_joint = std::string("(fixed)").size();
-    size_t w_parent = std::max(std::string("parent link").size(), tcp_.parent_link_name_.size());
+    // the tcp row has no joint of its own: it is the path through the tool, or the tcp joint without one
+    const std::string tcp_joint = tcp_.tcp_origin_in_flange_.isApprox(Eigen::Isometry3d::Identity()) ?
+        "(= flange)" : "(via tool)";
+    size_t w_joint = std::max({std::string("joint").size(), flange_.joint_name_.size(), tcp_joint.size()});
+    size_t w_parent = std::max({std::string("parent link").size(), flange_.parent_link_name_.size(),
+        tcp_.parent_link_name_.size()});
+    size_t w_child = std::max({std::string("child link").size(), flange_.flange_name_.size(),
+        tcp_.tcp_name_.size()});
     for (const auto & j : joints_) {
         w_joint = std::max(w_joint, j.joint_name_.size());
         w_parent = std::max(w_parent, j.parent_link_name_.size());
+        w_child = std::max(w_child, j.child_link_name_.size());
     }
 
     auto row = [&](std::ostringstream & os, const std::string & idx, const std::string & joint,
@@ -459,11 +541,19 @@ std::string robotarm_rbd::RobotarmRbd::chain_table_log() const
            << std::setw(3) << idx << "  "
            << std::setw(static_cast<int>(w_joint)) << joint << "  "
            << std::setw(static_cast<int>(w_parent)) << parent << "  "
-           << child;
+           << std::setw(static_cast<int>(w_child)) << child;
+    };
+    // translation [m] and rotation angle [deg] of a fixed frame relative to its parent in the table
+    auto offset = [](std::ostringstream & os, const Eigen::Isometry3d & T) {
+        const Eigen::Vector3d p = T.translation();
+        os << std::fixed << std::setprecision(4) << "  xyz (" << p.x() << ", " << p.y() << ", " << p.z()
+           << ") m, rotated " << std::setprecision(1)
+           << Eigen::AngleAxisd(T.linear()).angle() * 180.0 / M_PI << " deg";
+        os.unsetf(std::ios::floatfield);
     };
 
     std::ostringstream os;
-    os << "\nKinematic chain: " << joints_.size() << " joint(s) + tcp\n";
+    os << "\nKinematic chain: " << joints_.size() << " joint(s) + flange + tcp\n";
 
     std::ostringstream header;
     row(header, "#", "joint", "parent link", "child link");
@@ -474,10 +564,21 @@ std::string robotarm_rbd::RobotarmRbd::chain_table_log() const
         row(os, std::to_string(i), j.joint_name_, j.parent_link_name_, j.child_link_name_);
         os << "\n";
     }
-    row(os, "tcp", "(fixed)", tcp_.parent_link_name_, tcp_.tcp_name_);
+    row(os, "flg", flange_.joint_name_, flange_.parent_link_name_, flange_.flange_name_);
+    offset(os, flange_.flange_origin_in_parent_);
     os << "\n";
+    row(os, "tcp", tcp_joint, tcp_.parent_link_name_, tcp_.tcp_name_);
+    offset(os, tcp_.tcp_origin_in_flange_);
+    os << "\n";
+
     os << "inertia: " << (inertia_available_ ? "all links (dynamics available)"
                                              : "none (kinematics only)") << "\n";
+    if (inertia_available_) {
+        os << "tool: " << std::fixed << std::setprecision(3) << tool_mass_ << " kg folded into "
+           << flange_.parent_link_name_ << " (now " << joints_.back().inertia_.mass << " kg)\n";
+    } else {
+        os << "tool: inertia ignored (kinematics only)\n";
+    }
 
     return os.str();
 }
@@ -522,6 +623,31 @@ const char * implausible_inertial(double mass, const Eigen::Matrix3d & I, const 
 	if (moments[0] + moments[1] < moments[2] - tol) {
 		return "principal moments violate the triangle inequality";
 	}
+	return nullptr;
+}
+
+// URDF <inertial> -> mass, CoM in the link frame and the tensor about the CoM in link axes.
+// Returns nullptr if it is plausible, otherwise the reason (out is then incomplete).
+const char * read_inertial(const urdf::Inertial & in, robotarm_rbd::RobotarmRbd::InertialParams & out)
+{
+	const urdf::Rotation & r = in.origin.rotation;
+	out.mass = in.mass;
+	// vector to com in joint-frame
+	out.com = Eigen::Vector3d(in.origin.position.x, in.origin.position.y, in.origin.position.z);
+	const Eigen::Matrix3d R_com = Eigen::Quaterniond(r.w, r.x, r.y, r.z).toRotationMatrix();
+	// inertia tensor of com in com-frame
+	Eigen::Matrix3d I_com;
+	I_com << in.ixx, in.ixy, in.ixz,
+			 in.ixy, in.iyy, in.iyz,
+			 in.ixz, in.iyz, in.izz;
+	const char * reason = implausible_inertial(in.mass, I_com, out.com, Eigen::Vector4d(r.w, r.x, r.y, r.z));
+	if (reason) {
+		return reason;
+	}
+	// I_joint = R * I_com * R^T: rotates tensor from com axes into joint axes (L = R I_com R^T ω)
+	// reference point stays at com
+	out.com_inertia_in_joint = R_com * I_com * R_com.transpose();
+	out.valid = true;
 	return nullptr;
 }
 }  // namespace

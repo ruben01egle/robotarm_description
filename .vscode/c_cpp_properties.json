@@ -27,7 +27,6 @@
           "intelliSenseMode": "linux-gcc-x64",
           "compileCommands": "${workspaceFolder}/build/robotarm_rbd/compile_commands.json",
           "includePath": [
-            "${workspaceFolder}/src/**",
             "/opt/ros/jazzy/include/**"
           ]
         }

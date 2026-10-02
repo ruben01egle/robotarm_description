@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<!-- No tool mounted: the tcp is the flange. Same interface as the tools written by
+     convert_tool_urdf_to_xacro, but kept by hand, it is not exported from Onshape. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="tool" params="parent">
+        <link name="tcp"/>
+        <joint name="tcp_joint" type="fixed">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <parent link="${parent}"/>
+            <child link="tcp"/>
+        </joint>
+    </xacro:macro>
+</robot>
