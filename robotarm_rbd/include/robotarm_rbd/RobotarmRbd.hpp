@@ -125,14 +125,12 @@ public:
     bool calculate_jacobian(
         const Eigen::VectorXd &q,
         const std::string &link_name,
-        Eigen::Matrix<double, 6,
-        Eigen::Dynamic> &jacobian);
+        Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian);
     
     bool calculate_jacobian_inverse(
         const Eigen::VectorXd &q,
         const std::string &link_name,
-        Eigen::Matrix<double,
-        Eigen::Dynamic, 6> &jacobian_inverse);
+        Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse);
 
     // F_tcp, M_tcp: external wrench at the TCP, expressed in the TCP frame.
     // Convention: force/moment exerted ON the environment (not the reaction measured by a F/T sensor)
