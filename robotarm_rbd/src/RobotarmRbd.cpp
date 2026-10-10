@@ -35,8 +35,8 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
     flange_ = Flange();
     tcp_ = TCP();
 
-    if (!std::isfinite(config.lambda) || config.lambda < 0.0) {
-        return fail("lambda must be finite and >= 0, got %g", config.lambda);
+    if (!std::isfinite(config.lambda) || config.lambda <= 0.0) {
+        return fail("lambda must be finite and > 0, got %g", config.lambda);
     }
     config_ = config;
 
@@ -218,13 +218,21 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
 	}
 
 	// init heap member
-	j_cj_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
-	j_cji_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
-	j_jd2cd_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, joints_.size());
-	j_inv_cd2jd_ =  Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(joints_.size(), 6);
-	jtj_damped_ = Eigen::MatrixXd::Zero(joints_.size(), joints_.size());
-	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(joints_.size());
-	data_.resize(joints_.size());
+	Eigen::Index n = joints_.size();
+	Eigen::Index r = std::min<Eigen::Index>(6, n);
+	j_cj_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
+	j_cji_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
+	j_jd2cd_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
+	j_inv_cd2jd_ =  Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(n, 6);
+	jtj_damped_ = Eigen::MatrixXd::Zero(n, n);
+	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(n);
+	sdinv_ = Eigen::VectorXd::Zero(r);
+	sdinv_ut_ = Eigen::MatrixXd::Zero(r, 6);
+	// J⁺ = V · diag(σᵢ / (σᵢ² + λᵢ²)) · Uᵀ only needs the r = min(6, n) singular directions,
+	// so thin U (6×r) and thin V (n×r)
+	j_svd_ = Eigen::MatrixXd::Zero(6, n);
+	svd_ = Eigen::JacobiSVD<Eigen::MatrixXd>(6, n, Eigen::ComputeThinU | Eigen::ComputeThinV);
+	data_.resize(n);
 
     initialised_ = true;
     return true;
@@ -236,8 +244,6 @@ bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(
 	const std::string &link_name,
 	Eigen::VectorXd &delta_q)
 {
-    if (!check_input(q, "q")) return false;
-
 	if (!delta_x.allFinite()) {
 		return fail("delta_x contains NaN or inf");
 	}
@@ -254,8 +260,6 @@ bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
 	const std::string &link_name,
 	Eigen::Matrix<double, 6, 1> &delta_x)
 {
-	if (!check_input(q, "q")) return false;
-
 	if (delta_q.size() != static_cast<Eigen::Index>(joints_.size())) {
 		return fail("Unexpected delta_q dimension");
 	}
@@ -340,7 +344,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
     return true;
 }
 
-bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(
+bool robotarm_rbd::RobotarmRbd::calculate_jinv_ldlt(
 	const Eigen::VectorXd &q,
 	const std::string &link_name,
 	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
@@ -363,6 +367,60 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(
 	jacobian_inverse = ldlt_.solve(j_cji_.transpose());
 
     return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::calculate_jinv_svd(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
+	SingularityInfo *info)
+{
+	// q is validated by calculate_jacobian(), which is the first thing called here
+	if (!calculate_jacobian(q, link_name, j_cji_)) return false;
+
+	j_svd_ = j_cji_;
+	svd_.compute(j_svd_);
+	const auto& S = svd_.singularValues();
+	const Eigen::Index r = S.size();
+	double eps = std::sqrt(2) * config_.lambda;
+
+	// selective, adaptive damping, each singular direction i gets its own λᵢ:
+	//   λᵢ² = 0                          for σᵢ ≥ ε
+	//   λᵢ² = (1 − (σᵢ/ε)²) · λ²         for σᵢ < ε
+	// gain of direction i in J⁺: σᵢ / (σᵢ² + λᵢ²) -> Σ D⁻¹
+	for (Eigen::Index i=0; i<r; ++i) {
+		double lamdba_i_sq = 0;
+		if (S(i) < eps) {
+			lamdba_i_sq = (1 - (S(i)/eps)*(S(i)/eps)) * config_.lambda*config_.lambda;
+		}
+		sdinv_(i) = S(i) / (S(i)*S(i) + lamdba_i_sq);
+	}
+	// J⁺ = V Σ D⁻¹ Uᵀ
+	sdinv_ut_.noalias() = sdinv_.asDiagonal() * svd_.matrixU().transpose();
+	jacobian_inverse.noalias() = svd_.matrixV() * sdinv_ut_;
+
+	if (info != nullptr) {
+		info->singular_values = S;
+		info->U = svd_.matrixU();
+	}
+
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
+	SingularityInfo *info)
+{
+    switch (config_.jinv_method) {
+    case JinvMethod::LDLT:
+        if (info != nullptr) return fail("SingularityInfo requires jinv_method = SVD");
+        return calculate_jinv_ldlt(q, link_name, jacobian_inverse);
+    case JinvMethod::SVD:
+        return calculate_jinv_svd(q, link_name, jacobian_inverse, info);
+    }
+    return fail("Unknown jinv_method");
 }
 
 bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
@@ -510,6 +568,15 @@ bool robotarm_rbd::RobotarmRbd::get_link_names(std::vector<std::string> &names)
     return true;
 }
 
+bool robotarm_rbd::RobotarmRbd::get_base_link_name(std::string &name)
+{
+    if (!initialised_) {
+		return fail("Not initialised");
+	}
+	name = joints_.front().parent_link_name_;
+    return true;
+}
+
 bool robotarm_rbd::RobotarmRbd::get_tcp_link_name(std::string& name)
 {
     if (!initialised_) {
@@ -517,6 +584,11 @@ bool robotarm_rbd::RobotarmRbd::get_tcp_link_name(std::string& name)
 	}
 	name = tcp_.tcp_name_;
     return true;
+}
+
+size_t robotarm_rbd::RobotarmRbd::get_dof()
+{
+    return joints_.size();
 }
 
 std::string robotarm_rbd::RobotarmRbd::chain_table_log() const

@@ -60,9 +60,28 @@ public:
         bool valid = false;
     };
 
+    enum class JinvMethod { LDLT, SVD };
+
     struct Config {
         // damping factor of the damped least squares in calculate_jacobian_inverse(), >= 0
         double lambda = 0.01;
+        // default method for jinv
+        JinvMethod jinv_method = JinvMethod::SVD;
+    };
+
+    struct SingularityInfo {
+        Eigen::VectorXd singular_values;
+        Eigen::Matrix<double, 6, Eigen::Dynamic> U;
+
+        SingularityInfo() = default;
+        explicit SingularityInfo(Eigen::Index dof) { resize(dof); }
+
+        void resize(size_t dof) {
+            const auto r = static_cast<Eigen::Index>(std::min<std::size_t>(6, dof));
+            singular_values.resize(r);
+            U.resize(6, r);
+        }
+        double sigma_min() const { return singular_values(singular_values.size() - 1); }
     };
 
 protected:
@@ -127,10 +146,25 @@ public:
         const std::string &link_name,
         Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian);
     
-    bool calculate_jacobian_inverse(
+    // Damped least squares w. constant damping λ, fast, but damps all directions equally 
+    bool calculate_jinv_ldlt(
         const Eigen::VectorXd &q,
         const std::string &link_name,
         Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse);
+
+    // Selective, adaptive damped least squares, slower, but accurate
+    // Optionally returns singular values and directions
+    bool calculate_jinv_svd(
+        const Eigen::VectorXd &q,
+        const std::string &link_name,
+        Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
+        SingularityInfo *info = nullptr);
+
+    bool calculate_jacobian_inverse(
+        const Eigen::VectorXd &q,
+        const std::string &link_name,
+        Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
+        SingularityInfo *info = nullptr);
 
     // F_tcp, M_tcp: external wrench at the TCP, expressed in the TCP frame.
     // Convention: force/moment exerted ON the environment (not the reaction measured by a F/T sensor)
@@ -152,7 +186,9 @@ public:
     bool get_joint_names(std::vector<std::string>& names);
     bool get_joint_limits(std::vector<Limits>& limits);
     bool get_link_names(std::vector<std::string>& names);
+    bool get_base_link_name(std::string& name);
     bool get_tcp_link_name(std::string& name);
+    size_t get_dof();
 
     std::string chain_table_log() const;
 
@@ -188,8 +224,12 @@ private:
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_cji_;
     Eigen::Matrix<double, 6, Eigen::Dynamic> j_jd2cd_;
     Eigen::Matrix<double, Eigen::Dynamic, 6> j_inv_cd2jd_;
-    Eigen::MatrixXd jtj_damped_;   // JᵀJ + λ²I of the damped least squares
+    Eigen::MatrixXd jtj_damped_; // JᵀJ + λ²I of the damped least squares
+    Eigen::VectorXd sdinv_;      // diagonal entries of Σ D⁻¹ for svd
+    Eigen::MatrixXd sdinv_ut_;   // tmp matrix for (Σ D⁻¹) Uᵀ to avoid allocations in triple matrix product 
+    Eigen::MatrixXd j_svd_; // svd input and decomposition as MatrixXd: for a 6×Dynamic type, Eigen 3.4 allocates inside the QR preconditioner for n > 6
     Eigen::LDLT<Eigen::MatrixXd> ldlt_;
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd_;
 
     Config config_;
 };

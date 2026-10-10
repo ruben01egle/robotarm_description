@@ -4,8 +4,8 @@
 //      different lengths, DH-like and random geometry)
 //   2. initialize() rejects every invalid URDF, and accepts the geometry the old DH parser refused
 //   3. Jacobian against finite differences of the reference FK
-//   4. delta conversions: consistency with FK, round-trip accuracy of the damped inverse,
-//      behaviour at a singularity, input validation
+//   4. delta conversions: consistency with FK, round-trip accuracy of both damped inverses (ldlt
+//      and svd), the svd inverse against its formula, behaviour at a singularity, input validation
 // The allocation check lives in kinematics_malloc_test.cpp (it needs a special build).
 
 #include <gtest/gtest.h>
@@ -227,66 +227,129 @@ TEST_P(RobotTest, JointDeltasToCartesianAreTheJacobianProductAndFollowTheFkToFir
 
 TEST_P(RobotTest, RoundTripErrorStaysWithinTheDampingBound)
 {
-    // The damped inverse is J+ = V S (S^2 + l^2)^-1 U^T for J = U S V^T, so
-    //   J+ J = V diag(s^2 / (s^2 + l^2)) V^T   and   J J+ = U diag(s^2 / (s^2 + l^2)) U^T.
-    // Hence for both round trips (dq -> dx -> dq and dx -> dq -> dx):
-    //   |result - input| <= l^2 / (s_min^2 + l^2) * |input|
-    // with s_min the smallest singular value of the Jacobian at q. A bug in the Jacobian, its
-    // inverse or the products breaks this; a wrong / ignored lambda does as well.
+    // Both inverses are J+ = V diag(g_i) U^T for J = U S V^T, so
+    //   J+ J = V diag(s_i g_i) V^T   and   J J+ = U diag(s_i g_i) U^T,
+    // and both round trips (dq -> dx -> dq and dx -> dq -> dx) are off by at most
+    //   |result - input| <= max_i (1 - s_i g_i) * |input|.
+    // ldlt: g = s / (s^2 + l^2), so 1 - s g = l^2 / (s^2 + l^2), largest at s_min.
+    // svd:  g = s / (s^2 + l_i^2), l_i^2 <= l^2 and 0 for s >= eps = sqrt(2) l, so exact for
+    //       s_min >= eps and otherwise largest at s_min as well.
+    // A bug in the Jacobian, its inverse or the products breaks this; a wrong / ignored lambda or
+    // method does as well.
     // With fewer than 6 joints J (6xN) cannot reach every dx, so only dq -> dx -> dq is bounded;
     // with more than 6, J has a null space that dq -> dx loses, so only dx -> dq -> dx is.
     const bool check_joint_round_trip = n() <= 6;
     const bool check_cartesian_round_trip = n() >= 6;
     const std::string tcp = test_utils::tcp_name(core_);
-    for (const double lambda : {1e-6, 1e-2, 5e-2}) {
-        SCOPED_TRACE("lambda = " + std::to_string(lambda));
-        ASSERT_TRUE(test_utils::initialize(core_, urdf_, test_utils::lambda_param(lambda)));
+    for (const std::string method : {"ldlt", "svd"}) {
+        for (const double lambda : {1e-6, 1e-2, 5e-2}) {
+            SCOPED_TRACE(method + ", lambda = " + std::to_string(lambda));
+            ASSERT_TRUE(test_utils::initialize(core_, urdf_, test_utils::inverse_params(lambda, method)));
+            const bool ldlt = method == "ldlt";
 
-        int accepted = 0;
-        for (int k = 0; k < 1000 && accepted < 30; ++k) {
-            const Eigen::VectorXd q = random_q();
-            Jacobian J;
-            ASSERT_TRUE(core_.calculate_jacobian(q, tcp, J));
-            const double s_min = Eigen::JacobiSVD<Eigen::MatrixXd>(J).singularValues().minCoeff();
-            if (s_min < 0.03) {
-                continue;  // near a singularity, the bound is loose and says little
-            }
-            ++accepted;
-            const double bound = lambda * lambda / (s_min * s_min + lambda * lambda);
-            const double slack = 1e-6 * bound + 1e-10;  // floating point noise of the LDLT solve
+            int accepted = 0;
+            for (int k = 0; k < 1000 && accepted < 30; ++k) {
+                const Eigen::VectorXd q = random_q();
+                Jacobian J;
+                ASSERT_TRUE(core_.calculate_jacobian(q, tcp, J));
+                const double s_min = Eigen::JacobiSVD<Eigen::MatrixXd>(J).singularValues().minCoeff();
+                if (s_min < 0.03) {
+                    continue;  // near a singularity, the bound is loose and says little
+                }
+                ++accepted;
+                const double bound = ldlt ?
+                    lambda * lambda / (s_min * s_min + lambda * lambda) :
+                    1.0 - s_min * test_utils::svd_gain(s_min, lambda);
+                const double slack = 1e-6 * bound + 1e-10;  // floating point noise of the solve
+                // svd leaves every direction with s >= eps undamped
+                const bool svd_undamped = !ldlt && s_min >= std::sqrt(2.0) * lambda;
 
-            // dq -> dx -> dq
-            Eigen::VectorXd dq_back;
-            if (check_joint_round_trip) {
-                const Eigen::VectorXd dq = test_utils::random_vector(rng_, n(), 1e-3);
-                Vector6 dx;
-                ASSERT_TRUE(core_.convert_joint_deltas_to_cartesian_deltas(q, dq, tcp, dx));
-                ASSERT_TRUE(core_.convert_cartesian_deltas_to_joint_deltas(q, dx, tcp, dq_back));
-                const double joint_error = (dq_back - dq).norm() / dq.norm();
-                EXPECT_LE(joint_error, bound + slack);
-                if (lambda == 1e-6) {
-                    EXPECT_LT(joint_error, 1e-8);  // practically exact without damping
+                // dq -> dx -> dq
+                Eigen::VectorXd dq_back;
+                if (check_joint_round_trip) {
+                    const Eigen::VectorXd dq = test_utils::random_vector(rng_, n(), 1e-3);
+                    Vector6 dx;
+                    ASSERT_TRUE(core_.convert_joint_deltas_to_cartesian_deltas(q, dq, tcp, dx));
+                    ASSERT_TRUE(core_.convert_cartesian_deltas_to_joint_deltas(q, dx, tcp, dq_back));
+                    const double joint_error = (dq_back - dq).norm() / dq.norm();
+                    EXPECT_LE(joint_error, bound + slack);
+                    if (lambda == 1e-6 || svd_undamped) {
+                        EXPECT_LT(joint_error, 1e-8);  // practically exact without damping
+                    }
+                    if (lambda == 5e-2 && ldlt) {
+                        EXPECT_GT(joint_error, 1e-6);  // the damping is really applied, to every direction
+                    }
                 }
-                if (lambda == 5e-2) {
-                    EXPECT_GT(joint_error, 1e-6);  // the damping is really applied
-                }
-            }
 
-            // dx -> dq -> dx
-            if (check_cartesian_round_trip) {
-                const Vector6 dx_in = test_utils::random_vector(rng_, 6, 1e-3);
-                Vector6 dx_back;
-                ASSERT_TRUE(core_.convert_cartesian_deltas_to_joint_deltas(q, dx_in, tcp, dq_back));
-                ASSERT_TRUE(core_.convert_joint_deltas_to_cartesian_deltas(q, dq_back, tcp, dx_back));
-                const double cartesian_error = (dx_back - dx_in).norm() / dx_in.norm();
-                EXPECT_LE(cartesian_error, bound + slack);
-                if (lambda == 1e-6) {
-                    EXPECT_LT(cartesian_error, 1e-8);
+                // dx -> dq -> dx
+                if (check_cartesian_round_trip) {
+                    const Vector6 dx_in = test_utils::random_vector(rng_, 6, 1e-3);
+                    Vector6 dx_back;
+                    ASSERT_TRUE(core_.convert_cartesian_deltas_to_joint_deltas(q, dx_in, tcp, dq_back));
+                    ASSERT_TRUE(core_.convert_joint_deltas_to_cartesian_deltas(q, dq_back, tcp, dx_back));
+                    const double cartesian_error = (dx_back - dx_in).norm() / dx_in.norm();
+                    EXPECT_LE(cartesian_error, bound + slack);
+                    if (lambda == 1e-6 || svd_undamped) {
+                        EXPECT_LT(cartesian_error, 1e-8);
+                    }
                 }
             }
+            EXPECT_GE(accepted, 30) << "too few well-conditioned configurations found";
         }
-        EXPECT_GE(accepted, 30) << "too few well-conditioned configurations found";
     }
+}
+
+TEST_P(RobotTest, SvdInverseMatchesTheSelectiveDampingFormula)
+{
+    // against the formula evaluated from an independent SVD of the Jacobian (test_utils), for every
+    // link, at a lambda where some directions are damped and some are not
+    const double lambda = 5e-2;
+    ASSERT_TRUE(test_utils::initialize(core_, urdf_, test_utils::inverse_params(lambda, "svd")));
+    for (int k = 0; k < 20; ++k) {
+        const Eigen::VectorXd q = random_q();
+        for (const std::string & link : ref_->link_names()) {
+            SCOPED_TRACE("q = " + std::to_string(k) + ", link " + link);
+            Jacobian J;
+            JacobianInverse Ji;
+            ASSERT_TRUE(core_.calculate_jacobian(q, link, J));
+            ASSERT_TRUE(core_.calculate_jacobian_inverse(q, link, Ji));
+            ASSERT_EQ(Ji.rows(), n());
+            const Eigen::MatrixXd Ji_ref = test_utils::reference_svd_inverse(J, lambda);
+            // the gain is at most 1 / eps ~ 14 here
+            EXPECT_LT((Ji - Ji_ref).cwiseAbs().maxCoeff(), 1e-10);
+        }
+    }
+}
+
+TEST_P(RobotTest, BothMethodsAgreeAwayFromSingularities)
+{
+    // with a tiny lambda both are the undamped pseudo inverse wherever J is well conditioned.
+    // Not for more than 6 joints: there the n×n JᵀJ of the ldlt has a null space, JᵀJ + l²I is
+    // conditioned ~ 1 / l², and the ldlt solve loses ~ 4 digits at l = 1e-6.
+    if (n() > 6) {
+        GTEST_SKIP() << "ldlt is ill conditioned for a tiny lambda on a redundant chain";
+    }
+    const double lambda = 1e-6;
+    const std::string tcp = test_utils::tcp_name(core_);
+    TestableKinematics ldlt, svd;
+    ASSERT_TRUE(test_utils::initialize(ldlt, urdf_, test_utils::inverse_params(lambda, "ldlt")));
+    ASSERT_TRUE(test_utils::initialize(svd, urdf_, test_utils::inverse_params(lambda, "svd")));
+    int accepted = 0;
+    for (int k = 0; k < 1000 && accepted < 20; ++k) {
+        const Eigen::VectorXd q = random_q();
+        Jacobian J;
+        ASSERT_TRUE(ldlt.calculate_jacobian(q, tcp, J));
+        if (Eigen::JacobiSVD<Eigen::MatrixXd>(J).singularValues().minCoeff() < 0.03) {
+            continue;
+        }
+        ++accepted;
+        JacobianInverse Ji_ldlt, Ji_svd;
+        ASSERT_TRUE(ldlt.calculate_jacobian_inverse(q, tcp, Ji_ldlt));
+        ASSERT_TRUE(svd.calculate_jacobian_inverse(q, tcp, Ji_svd));
+        // ldlt still damps by l^2 / s^2 <= 1e-12 / 0.03^2 ~ 1e-9 relative, svd not at all
+        EXPECT_LT((Ji_ldlt - Ji_svd).norm() / Ji_svd.norm(), 1e-8);
+    }
+    EXPECT_GE(accepted, 20) << "too few well-conditioned configurations found";
 }
 
 TEST_P(RobotTest, InvalidInputsFailAndLeaveOutputsUntouched)
@@ -388,31 +451,41 @@ TEST_P(RobotTest, UnsizedOutputsAreResizedAndGiveTheSameResultAsPresizedOnes)
 TEST(Singularity, DampingKeepsTheJointDeltasBoundedAtTheWristSingularity)
 {
     const double lambda = 1e-2;
-    TestableKinematics core;
-    ASSERT_TRUE(test_utils::initialize(core, urdf_for("baseline"), test_utils::lambda_param(lambda)));
+    for (const std::string method : {"ldlt", "svd"}) {
+        SCOPED_TRACE(method);
+        const bool ldlt = method == "ldlt";
+        TestableKinematics core;
+        ASSERT_TRUE(test_utils::initialize(
+            core, urdf_for("baseline"), test_utils::inverse_params(lambda, method)));
 
-    Eigen::VectorXd q(6);
-    q << 0.1, -0.5, 0.8, 0.2, 0.0, -0.3;  // q5 = 0 aligns axes 4 and 6
-    Jacobian J;
-    ASSERT_TRUE(core.calculate_jacobian(q, "tcp", J));
-    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeFullU);
-    const double s_min = svd.singularValues().minCoeff();
-    ASSERT_LT(s_min, 1e-9) << "test premise: this configuration must be singular";
+        Eigen::VectorXd q(6);
+        q << 0.1, -0.5, 0.8, 0.2, 0.0, -0.3;  // q5 = 0 aligns axes 4 and 6
+        Jacobian J;
+        ASSERT_TRUE(core.calculate_jacobian(q, "tcp", J));
+        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeFullU);
+        const double s_min = svd.singularValues().minCoeff();
+        ASSERT_LT(s_min, 1e-9) << "test premise: this configuration must be singular";
 
-    // A Cartesian delta the arm cannot follow: an undamped inverse would give |dq| ~ |dx| / s_min.
-    const Vector6 dx_lost = 1e-3 * svd.matrixU().col(5);
-    Eigen::VectorXd dq;
-    ASSERT_TRUE(core.convert_cartesian_deltas_to_joint_deltas(q, dx_lost, "tcp", dq));
-    ASSERT_TRUE(dq.allFinite());
-    EXPECT_NEAR(dq.norm(), dx_lost.norm() * s_min / (s_min * s_min + lambda * lambda), 1e-12);
-
-    // In general |dq| <= |dx| * max_s s / (s^2 + l^2) <= |dx| / (2 l), for any direction.
-    std::mt19937 rng(7);
-    for (int n = 0; n < 200; ++n) {
-        const Vector6 dx = test_utils::random_vector(rng, 6, 1e-3);
-        ASSERT_TRUE(core.convert_cartesian_deltas_to_joint_deltas(q, dx, "tcp", dq));
+        // A Cartesian delta the arm cannot follow: an undamped inverse would give |dq| ~ |dx| / s_min.
+        const Vector6 dx_lost = 1e-3 * svd.matrixU().col(5);
+        const double gain = ldlt ?
+            s_min / (s_min * s_min + lambda * lambda) : test_utils::svd_gain(s_min, lambda);
+        Eigen::VectorXd dq;
+        ASSERT_TRUE(core.convert_cartesian_deltas_to_joint_deltas(q, dx_lost, "tcp", dq));
         ASSERT_TRUE(dq.allFinite());
-        EXPECT_LE(dq.norm(), dx.norm() / (2 * lambda) * (1 + 1e-9));
+        EXPECT_NEAR(dq.norm(), dx_lost.norm() * gain, 1e-12);
+
+        // In general |dq| <= |dx| * max_s g(s), for any direction:
+        //   ldlt: s / (s^2 + l^2), largest at s = l:            1 / (2 l)
+        //   svd:  s / (l^2 + s^2 / 2) below eps = sqrt(2) l, 1 / s above, largest at s = eps: 1 / (sqrt(2) l)
+        const double max_gain = ldlt ? 1.0 / (2 * lambda) : 1.0 / (std::sqrt(2.0) * lambda);
+        std::mt19937 rng(7);
+        for (int n = 0; n < 200; ++n) {
+            const Vector6 dx = test_utils::random_vector(rng, 6, 1e-3);
+            ASSERT_TRUE(core.convert_cartesian_deltas_to_joint_deltas(q, dx, "tcp", dq));
+            ASSERT_TRUE(dq.allFinite());
+            EXPECT_LE(dq.norm(), dx.norm() * max_gain * (1 + 1e-9));
+        }
     }
 }
 
@@ -590,12 +663,35 @@ TEST(Initialize, RobotModelGettersFailBeforeInitializeAndLeaveTheOutputUntouched
 
 TEST(Initialize, LambdaIsReadFromTheParameter)
 {
-    // the values accepted by the check ">= 0 and finite"; the rejected ones are in InvalidUrdfTest
+    // the values accepted by the check "> 0 and finite"; the rejected ones are in InvalidUrdfTest
     const std::string urdf = urdf_for("baseline");
-    for (const double lambda : {0.0, 1e-6, 0.5}) {
+    for (const double lambda : {1e-6, 0.5}) {
         TestableKinematics core;
         EXPECT_TRUE(test_utils::initialize(core, urdf, test_utils::lambda_param(lambda))) << lambda;
     }
+}
+
+TEST(Initialize, JinvMethodIsReadFromTheParameter)
+{
+    // both values accepted, the rejected ones are in InvalidUrdfTest. The methods differ far from a
+    // singularity at a large lambda: ldlt damps every direction, svd none of the well conditioned ones.
+    const std::string urdf = urdf_for("baseline");
+    Eigen::VectorXd q(6);
+    q << 0.1, -0.5, 0.8, 0.2, 0.7, -0.3;
+    JacobianInverse Ji_ldlt, Ji_svd;
+    TestableKinematics ldlt, svd;
+    ASSERT_TRUE(test_utils::initialize(ldlt, urdf, test_utils::inverse_params(0.5, "ldlt")));
+    ASSERT_TRUE(test_utils::initialize(svd, urdf, test_utils::inverse_params(0.5, "svd")));
+    ASSERT_TRUE(ldlt.calculate_jacobian_inverse(q, "tcp", Ji_ldlt));
+    ASSERT_TRUE(svd.calculate_jacobian_inverse(q, "tcp", Ji_svd));
+    EXPECT_GT((Ji_ldlt - Ji_svd).cwiseAbs().maxCoeff(), 1e-3);
+
+    // without the parameter: svd
+    TestableKinematics dflt;
+    ASSERT_TRUE(test_utils::initialize(dflt, urdf, test_utils::lambda_param(0.5)));
+    JacobianInverse Ji_default;
+    ASSERT_TRUE(dflt.calculate_jacobian_inverse(q, "tcp", Ji_default));
+    EXPECT_TRUE(Ji_default == Ji_svd);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -758,12 +854,18 @@ std::vector<InvalidCase> invalid_cases()
     c.push_back({"EmptyString", nullptr, true, "", {}});
 
     // the valid URDF with an invalid parameter
+    c.push_back({"LambdaZero", nullptr, false, "", {rclcpp::Parameter("lambda", 0.0)}});
     c.push_back({"LambdaNegative", nullptr, false, "", {rclcpp::Parameter("lambda", -0.1)}});
     c.push_back({"LambdaNan", nullptr, false, "", {rclcpp::Parameter("lambda", nan)}});
     c.push_back({"LambdaInfinite", nullptr, false, "",
         {rclcpp::Parameter("lambda", std::numeric_limits<double>::infinity())}});
     c.push_back({"LambdaWrongType", nullptr, false, "",
         {rclcpp::Parameter("lambda", std::string("abc"))}});
+    c.push_back({"JinvMethodUnknown", nullptr, false, "",
+        {rclcpp::Parameter("jinv_method", std::string("qr"))}});
+    c.push_back({"JinvMethodUpperCase", nullptr, false, "",
+        {rclcpp::Parameter("jinv_method", std::string("SVD"))}});
+    c.push_back({"JinvMethodWrongType", nullptr, false, "", {rclcpp::Parameter("jinv_method", 1)}});
     return c;
 }
 

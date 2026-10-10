@@ -23,7 +23,9 @@ bool robotarm_rbd::Kinematics::initialize(
 {
 	RobotarmRbd::Config rbd_cfg;
     // Declared only if the host node has not already declared it (or auto-declared it from overrides).
-    const std::string lambda_param = (param_namespace.empty() ? "" : param_namespace + ".") + "lambda";
+    const std::string prefix = param_namespace.empty() ? "" : param_namespace + ".";
+    const std::string lambda_param = prefix + "lambda";
+    const std::string jinv_method_param = prefix + "jinv_method";
     try {
         if (!parameters_interface->has_parameter(lambda_param)) {
             parameters_interface->declare_parameter(lambda_param, rclcpp::ParameterValue(0.01));
@@ -31,6 +33,27 @@ bool robotarm_rbd::Kinematics::initialize(
         rbd_cfg.lambda = parameters_interface->get_parameter(lambda_param).as_double();
     } catch (const std::exception & e) {
         RCLCPP_ERROR(logger(), "Failed to read parameter '%s': %s", lambda_param.c_str(), e.what());
+        return false;
+    }
+
+    // "svd": selective, adaptive damping (accurate), "ldlt": constant damping (fast)
+    std::string jinv_method;
+    try {
+        if (!parameters_interface->has_parameter(jinv_method_param)) {
+            parameters_interface->declare_parameter(jinv_method_param, rclcpp::ParameterValue(std::string("svd")));
+        }
+        jinv_method = parameters_interface->get_parameter(jinv_method_param).as_string();
+    } catch (const std::exception & e) {
+        RCLCPP_ERROR(logger(), "Failed to read parameter '%s': %s", jinv_method_param.c_str(), e.what());
+        return false;
+    }
+    if (jinv_method == "svd") {
+        rbd_cfg.jinv_method = RobotarmRbd::JinvMethod::SVD;
+    } else if (jinv_method == "ldlt") {
+        rbd_cfg.jinv_method = RobotarmRbd::JinvMethod::LDLT;
+    } else {
+        RCLCPP_ERROR(logger(), "Invalid parameter '%s': '%s', expected 'svd' or 'ldlt'",
+            jinv_method_param.c_str(), jinv_method.c_str());
         return false;
     }
 

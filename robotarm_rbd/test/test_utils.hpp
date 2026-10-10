@@ -15,6 +15,7 @@
 //  - real_urdf():   the URDF of the real robot, processed by xacro (real_urdf.hpp, ROS free)
 
 #include <Eigen/Geometry>
+#include <Eigen/SVD>
 
 #include <cmath>
 #include <cstdio>
@@ -54,6 +55,32 @@ inline std::string tcp_name(robotarm_rbd::Kinematics & core)
 inline std::vector<rclcpp::Parameter> lambda_param(double lambda)
 {
     return {rclcpp::Parameter("lambda", lambda)};
+}
+
+// lambda and the jacobian inverse method ("svd" or "ldlt")
+inline std::vector<rclcpp::Parameter> inverse_params(double lambda, const std::string & method)
+{
+    return {rclcpp::Parameter("lambda", lambda), rclcpp::Parameter("jinv_method", method)};
+}
+
+// Reference for the SVD inverse, written straight from the formula: J⁺ = Σᵢ gᵢ vᵢ uᵢᵀ with the gain
+// gᵢ = σᵢ / (σᵢ² + λᵢ²) and λᵢ² = (1 − (σᵢ/ε)²) λ² for σᵢ < ε = √2 λ, 0 otherwise.
+inline double svd_gain(double s, double lambda)
+{
+    const double eps = std::sqrt(2.0) * lambda;
+    const double lambda_i_sq = s < eps ? (1.0 - (s / eps) * (s / eps)) * lambda * lambda : 0.0;
+    return s / (s * s + lambda_i_sq);
+}
+
+inline Eigen::MatrixXd reference_svd_inverse(const Eigen::MatrixXd & J, double lambda)
+{
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    Eigen::MatrixXd Ji = Eigen::MatrixXd::Zero(J.cols(), J.rows());
+    for (Eigen::Index i = 0; i < svd.singularValues().size(); ++i) {
+        Ji += svd_gain(svd.singularValues()(i), lambda) *
+            svd.matrixV().col(i) * svd.matrixU().col(i).transpose();
+    }
+    return Ji;
 }
 
 inline bool initialize(

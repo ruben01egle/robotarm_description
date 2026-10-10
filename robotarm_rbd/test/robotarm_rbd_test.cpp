@@ -180,7 +180,7 @@ TEST(RobotarmRbd, AMalformedUrdfFailsWithAMessage)
 
 TEST(RobotarmRbd, AnInvalidLambdaFailsWithAMessage)
 {
-    for (const double lambda : {-0.1, std::numeric_limits<double>::quiet_NaN(),
+    for (const double lambda : {0.0, -0.1, std::numeric_limits<double>::quiet_NaN(),
             std::numeric_limits<double>::infinity()})
     {
         SCOPED_TRACE("lambda = " + std::to_string(lambda));
@@ -233,6 +233,104 @@ TEST(RobotarmRbd, GettersFailBeforeInitialiseWithAMessage)
     EXPECT_FALSE(rbd.get_joint_names(names));
     EXPECT_STREQ(rbd.last_error(), "Not initialised");
     EXPECT_EQ(names, std::vector<std::string>{"keep"});
+}
+
+// ---------------------------------------------------------------------------------------------
+// jacobian inverse: method selection and SingularityInfo (the numerics are in kinematics_test.cpp)
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+
+robotarm_rbd::RobotarmRbd::Config inverse_config(robotarm_rbd::RobotarmRbd::JinvMethod method)
+{
+    robotarm_rbd::RobotarmRbd::Config config;
+    config.lambda = 0.05;
+    config.jinv_method = method;
+    return config;
+}
+
+}  // namespace
+
+TEST(JacobianInverse, TheDispatcherRunsTheConfiguredMethod)
+{
+    using Method = robotarm_rbd::RobotarmRbd::JinvMethod;
+    const Eigen::VectorXd q = Eigen::Vector2d(0.3, -0.4);
+    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji, Ji_direct;
+    for (const Method method : {Method::LDLT, Method::SVD}) {
+        robotarm_rbd::RobotarmRbd rbd;
+        ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(method))) << rbd.last_error();
+        ASSERT_TRUE(rbd.calculate_jacobian_inverse(q, "tcp", Ji)) << rbd.last_error();
+        if (method == Method::LDLT) {
+            ASSERT_TRUE(rbd.calculate_jinv_ldlt(q, "tcp", Ji_direct));
+        } else {
+            ASSERT_TRUE(rbd.calculate_jinv_svd(q, "tcp", Ji_direct));
+        }
+        EXPECT_TRUE(Ji == Ji_direct);
+    }
+}
+
+TEST(JacobianInverse, SingularityInfoHoldsTheSingularValuesAndDirectionsOfTheJacobian)
+{
+    // 2 joints: J is 6x2, so 2 singular values and 2 directions in U
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(robotarm_rbd::RobotarmRbd::JinvMethod::SVD)));
+    const Eigen::VectorXd q = Eigen::Vector2d(0.3, -0.4);
+    Eigen::Matrix<double, 6, Eigen::Dynamic> J;
+    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji;
+    ASSERT_TRUE(rbd.calculate_jacobian(q, "tcp", J));
+
+    robotarm_rbd::RobotarmRbd::SingularityInfo info(2);
+    ASSERT_TRUE(rbd.calculate_jinv_svd(q, "tcp", Ji, &info)) << rbd.last_error();
+    ASSERT_EQ(info.singular_values.size(), 2);
+    ASSERT_EQ(info.U.rows(), 6);
+    ASSERT_EQ(info.U.cols(), 2);
+
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    EXPECT_LT((info.singular_values - svd.singularValues()).cwiseAbs().maxCoeff(), 1e-12);
+    EXPECT_DOUBLE_EQ(info.sigma_min(), svd.singularValues().minCoeff());
+    // singular vectors are unique up to sign: compare |u_i . u_ref_i|, and check J^T u_i = s_i v_i
+    for (Eigen::Index i = 0; i < 2; ++i) {
+        EXPECT_NEAR(std::abs(info.U.col(i).dot(svd.matrixU().col(i))), 1.0, 1e-12) << i;
+        EXPECT_NEAR(
+            (J.transpose() * info.U.col(i)).norm(), info.singular_values(i), 1e-12) << i;
+    }
+}
+
+TEST(JacobianInverse, SingularityInfoIsResizedWhenNotPresized)
+{
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(robotarm_rbd::RobotarmRbd::JinvMethod::SVD)));
+    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji;
+    robotarm_rbd::RobotarmRbd::SingularityInfo info;
+    ASSERT_TRUE(rbd.calculate_jinv_svd(Eigen::Vector2d(0.3, -0.4), "tcp", Ji, &info));
+    EXPECT_EQ(info.singular_values.size(), 2);
+    EXPECT_EQ(info.U.cols(), 2);
+}
+
+TEST(JacobianInverse, SingularityInfoWithTheLdltMethodFailsAndLeavesTheOutputUntouched)
+{
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(robotarm_rbd::RobotarmRbd::JinvMethod::LDLT)));
+    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji = Eigen::Matrix<double, Eigen::Dynamic, 6>::Constant(2, 6, 42.0);
+    robotarm_rbd::RobotarmRbd::SingularityInfo info(2);
+    EXPECT_FALSE(rbd.calculate_jacobian_inverse(Eigen::Vector2d(0.3, -0.4), "tcp", Ji, &info));
+    EXPECT_NE(std::string(rbd.last_error()).find("SVD"), std::string::npos) << rbd.last_error();
+    EXPECT_TRUE((Ji.array() == 42.0).all());
+}
+
+TEST(JacobianInverse, AFailedSvdInverseLeavesOutputAndInfoUntouched)
+{
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(robotarm_rbd::RobotarmRbd::JinvMethod::SVD)));
+    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji = Eigen::Matrix<double, Eigen::Dynamic, 6>::Constant(2, 6, 42.0);
+    robotarm_rbd::RobotarmRbd::SingularityInfo info(2);
+    info.singular_values.setConstant(42.0);
+    info.U.setConstant(42.0);
+    EXPECT_FALSE(rbd.calculate_jinv_svd(Eigen::Vector2d(0.3, -0.4), "no_such_link", Ji, &info));
+    EXPECT_TRUE((Ji.array() == 42.0).all());
+    EXPECT_TRUE((info.singular_values.array() == 42.0).all());
+    EXPECT_TRUE((info.U.array() == 42.0).all());
 }
 
 // ---------------------------------------------------------------------------------------------

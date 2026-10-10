@@ -1,7 +1,8 @@
 # robotarm_rbd
 
 Rigid body math for the 6-DOF robot arm, taken straight from the URDF (joint origins, axes, limits and
-link inertias): forward kinematics, geometric Jacobian, its damped least squares inverse and the inverse
+link inertias): forward kinematics, geometric Jacobian, its damped least squares inverse (constant or
+selective damping) and the inverse
 dynamics (recursive Newton-Euler, RNEA). It works for any serial chain of revolute joints, not only for
 6 of them. An exchangeable tool behind the flange is taken from the URDF as well: the tcp is wherever the
 tool puts it, and the mass of the tool is folded into the last moving link (see "Tool behind the flange").
@@ -33,12 +34,14 @@ link it moves.
 
 ## Parameters (read once in `Kinematics::initialize`)
 
-| parameter                  | default | meaning                                                                      |
-|----------------------------|---------|------------------------------------------------------------------------------|
-| `<param_namespace>.lambda` | `0.01`  | damping of the damped least squares in `calculate_jacobian_inverse`, `>= 0`  |
+| parameter                       | default | meaning                                                                      |
+|---------------------------------|---------|------------------------------------------------------------------------------|
+| `<param_namespace>.lambda`      | `0.01`  | damping of the damped least squares in `calculate_jacobian_inverse`, `> 0`   |
+| `<param_namespace>.jinv_method` | `svd`   | how `calculate_jacobian_inverse` damps: `svd` (selective, adaptive) or `ldlt` (constant), see "Jacobian and its damped pseudo-inverse" |
 
-`<param_namespace>` is the argument of `initialize`; if it is empty the parameter is just `lambda`.
-A value that is negative, not finite or not a double makes `initialize` return `false`.
+`<param_namespace>` is the argument of `initialize`; if it is empty the parameters are just `lambda` and
+`jinv_method`. A `lambda` that is zero, negative, not finite or not a double, and a `jinv_method` other
+than the strings `svd` or `ldlt` make `initialize` return `false`.
 
 ## Caller contract of the kinematics functions
 
@@ -159,6 +162,17 @@ tiny cartesian step would demand huge joint velocities. `calculate_jacobian_inve
 the damped least squares pseudo-inverse `J⁺` (Nx6), which is used by
 `convert_cartesian_deltas_to_joint_deltas` as `delta_theta = J⁺ · delta_x`.
 
+There are two ways to damp it, both on `RobotarmRbd`. `calculate_jacobian_inverse` (and with it
+`convert_cartesian_deltas_to_joint_deltas`) runs the one chosen by `Config::jinv_method` (parameter
+`jinv_method`), and each can also be called directly:
+
+| method | function             | damping                                                   | cost                     |
+|--------|----------------------|-----------------------------------------------------------|--------------------------|
+| `ldlt` | `calculate_jinv_ldlt` | constant: every direction by the same `λ`                | one NxN LDLT, fast       |
+| `svd`  | `calculate_jinv_svd`  | selective, adaptive: only directions with `σᵢ < √2 λ`, the more the closer to singular | one SVD of `J`, slower |
+
+### Constant damping (`ldlt`)
+
 `J⁺` comes from trading tracking error against joint motion:
 
 ```
@@ -182,8 +196,39 @@ exceeds `1/(2λ)`, which bounds the joint velocities near a singularity.
 - `λ` is the parameter `lambda` (default `0.01`). Larger is safer near singularities but less accurate:
   `J · J⁺ ≠ I`, so `J · delta_theta` differs slightly from `delta_x`. In an iterative IK loop this
   residual is corrected by the next iteration.
-- The damping is constant. Since the rows of `J` mix metres and radians, the same `λ` weighs the
-  position and orientation parts differently.
+- The damping is constant: it costs accuracy everywhere, also far from any singularity.
+- With more than 6 joints `JᵀJ` (NxN, rank ≤ 6) has a null space that only `λ²I` keeps invertible, so
+  `M` is conditioned ~ `1/λ²`. For a tiny `λ` (`1e-6`) the solve loses about 4 digits.
+
+### Selective, adaptive damping (`svd`)
+
+`J` is decomposed, `J = U Σ Vᵀ`, and every singular direction gets its own damping `λᵢ`:
+
+```
+ε   = √2 λ
+λᵢ² = 0                       for σᵢ ≥ ε      (well conditioned: undamped, gain 1/σᵢ)
+λᵢ² = (1 − (σᵢ/ε)²) · λ²      for σᵢ < ε      (grows smoothly to λ² at σᵢ = 0)
+
+J⁺  = Σ σᵢ / (σᵢ² + λᵢ²) · vᵢ uᵢᵀ  =  V · diag(σᵢ / (σᵢ² + λᵢ²)) · Uᵀ
+```
+
+- Away from singularities (`σ_min ≥ ε`) this is the exact pseudo-inverse, `J · J⁺ = I` for 6 joints. Only
+  the directions that are actually close to singular lose accuracy.
+- The gain is continuous at `σᵢ = ε` and peaks there at `1/ε = 1/(√2 λ)`. This bound on the joint
+  velocities is about 41 % above the `1/(2λ)` of `ldlt` at the same `λ`.
+- The denominator is at least `λ² (1 − (σᵢ/ε)²) + σᵢ² > 0`, so there is no `0/0` at an exact singularity.
+- Thin U (6 x r) and V (N x r) with `r = min(6, N)`, only these directions have a singular value. The
+  SVD runs on a `MatrixXd` copy of `J`: for a `Matrix<double, 6, Dynamic>`, Eigen 3.4 allocates inside the
+  QR preconditioner of `JacobiSVD` when N > 6.
+- As with `ldlt`, the rows of `J` mix metres and radians, so `σᵢ` and the threshold `ε` depend on the
+  length unit and on the tcp offset.
+
+`calculate_jinv_svd` optionally fills a `SingularityInfo` with the singular values (descending) and the
+matching Cartesian directions, the columns of `U`. `sigma_min()` is the distance to the nearest
+singularity, and `U.col(r − 1)` is the twist direction that is hardest to follow. A caller can use them
+to slow down before a singularity, or only when the commanded twist points into it (`|uᵢᵀ · delta_x|`).
+Size it with `SingularityInfo(dof)`, otherwise the call allocates. `calculate_jacobian_inverse`
+forwards it with `svd` and fails with `ldlt`.
 
 ## Inverse dynamics (recursive Newton-Euler)
 
@@ -667,7 +712,8 @@ would publish `/joint_states`.
   Then the joint step is limited (below), added to the joint positions and published. Purely kinematic:
   no controller, no dynamics.
 - **Parameters**: `robot_description`, `kinematics_plugin` (`robotarm_rbd/Kinematics`),
-  `rate` (100 Hz), `twist_timeout` (0.2 s), `initial_joint_positions`, `lambda` (launch argument, default 0.05).
+  `rate` (100 Hz), `twist_timeout` (0.2 s), `initial_joint_positions`, `lambda` (launch argument, default 0.05),
+  `jinv_method` (read by the plugin, default `svd`, not a launch argument).
 - **Watchdog**: the last twist is applied until it is `twist_timeout` old. Nothing older is used, and the
   tool coasts for at most that long after the last message (at 0.05 m/s: up to 1 cm).
 - **Robot model**: joint names, joint limits and the tcp link come from the plugin (robot model getters
@@ -684,8 +730,10 @@ would publish `/joint_states`.
 - **Near the reach boundary** (arm almost stretched) the elbow needs very large speeds, so the velocity limit
   scales the whole motion down towards zero: the tool creeps instead of stopping. That is the damped
   inverse and the limit doing their job, not a hang.
-- **`lambda`** trades accuracy against safety near singularities. At `q = (0, -1.3, 1.5, 0, 1.0, 0)` the tool moves at 93-95 %
-  of the commanded speed with `lambda = 0.05`, at 99.7 % with `0.01` (rotation: 99.5 % / 100 %).
+- **`lambda`** trades accuracy against safety near singularities. At `q = (0, -1.3, 1.5, 0, 1.0, 0)` the
+  tool moves at exactly 100 % of the commanded speed with the default `svd` for both `lambda = 0.05` and
+  `0.01` (`σ_min = 0.14` is above `ε`, nothing is damped). With `jinv_method = ldlt` it moves at 93-95 %
+  with `0.05` and at 99.7 % with `0.01` (rotation: 99.5 % / 100 %).
 
 ## Tests
 
@@ -706,15 +754,18 @@ runnable directly from `build/robotarm_rbd/` (with `--gtest_filter=...`):
 
 | executable                | links rclcpp | covers                                                                                  |
 |---------------------------|--------------|-----------------------------------------------------------------------------------------|
-| `kinematics_test`         | yes | URDF parsing (origins, normalised axes, limits, chain length, flange, tcp through a tool), link transforms of every link, flange and tcp against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule, incl. missing / wrong flange and missing tcp), delta conversions and input validation, round-trip accuracy of the damped inverse |
-| `robotarm_rbd_test`       | no  | lifecycle and error messages of the ROS free `RobotarmRbd` (fails to link if it pulls in ROS), `<inertial>` parsing and rotation `R I Rᵀ`, the inertia rules (all or none, implausible tensors rejected), inverse dynamics solved by hand: pendulum `τ = (I + mL²) q̈ − m g L cos q`, TCP wrench in a rotated tcp frame split into flange and tcp, vertical first axis, refusal without inertia. Tool folding by hand: a rotated tool body (mass, CoM, tensor against the direct Steiner form, torques), a branched tool with a prismatic jaw, a tool without inertia, a tool on a kinematics only arm, an implausible tool inertia, the wrench at a tcp on the tool |
+| `kinematics_test`         | yes | URDF parsing (origins, normalised axes, limits, chain length, flange, tcp through a tool), link transforms of every link, flange and tcp against an independent reference FK built from the URDF joint origins, Jacobian against finite differences, geometry the old DH parser refused being accepted and computed correctly, `initialize()` rejecting every invalid URDF (one case per rule, incl. missing / wrong flange and missing tcp), delta conversions and input validation, round-trip accuracy of both damped inverses (`ldlt` and `svd`), the `svd` inverse of every link against its formula on an independent SVD, both methods agreeing away from singularities, bounded joint deltas at the wrist singularity for both, the `jinv_method` parameter |
+| `robotarm_rbd_test`       | no  | lifecycle and error messages of the ROS free `RobotarmRbd` (fails to link if it pulls in ROS), `<inertial>` parsing and rotation `R I Rᵀ`, the inertia rules (all or none, implausible tensors rejected), inverse dynamics solved by hand: pendulum `τ = (I + mL²) q̈ − m g L cos q`, TCP wrench in a rotated tcp frame split into flange and tcp, vertical first axis, refusal without inertia. The jacobian inverse: dispatch to the configured method, `SingularityInfo` (singular values and directions against an independent SVD, resized when not pre-sized, refused with `ldlt`, untouched on failure). Tool folding by hand: a rotated tool body (mass, CoM, tensor against the direct Steiner form, torques), a branched tool with a prismatic jaw, a tool without inertia, a tool on a kinematics only arm, an implausible tool inertia, the wrench at a tcp on the tool |
 | `rnea_pinocchio_test`     | no  | the real robot against Pinocchio, once as it is and once with a gripper with mass between flange and tcp (`real_urdf_with_test_tool`): same joints, masses, CoMs and tensors (for the last link: our folding against Pinocchio's merge), the gripper adding its mass to the last link only, static gravity (also against `−Σ m J_comᵀ g` from our FK), mass matrix from unit accelerations (symmetric, positive definite, = `crba`), 500 random (q, q̇, q̈) = `rnea`, TCP wrench = `rnea` with `fext` (sign flipped, moved to the joint 6 frame) and = `Jᵀ w`, FK and Jacobian of every link, the flange and the tcp = Pinocchio |
-| `kinematics_malloc_test`  | yes | the rt path (kinematics and inverse dynamics) does not allocate with pre-sized outputs (Eigen's malloc guard), with negative controls so the guard cannot be silently off |
+| `kinematics_malloc_test`  | yes | the rt path (kinematics with both inverse methods on 3, 6 and 7 joints, a pre-sized `SingularityInfo`, inverse dynamics) does not allocate with pre-sized outputs (Eigen's malloc guard), with negative controls so the guard cannot be silently off |
 | `joint_limiter_test`      | no  | the joint limit policy of the jog tool (`tools/cartesian_jog/JointLimiter.hpp`): velocity and position limits, uniform scaling, joints at / beyond a limit, invalid input |
 
-The round-trip test asserts the exact bound of the damped inverse, `|J⁺J dq − dq| ≤ λ² / (σ_min² + λ²) · |dq|`
-(same for `J J⁺`), not an arbitrary tolerance. With fewer than 6 joints only the `dq` round trip is
-bounded, with more than 6 only the `dx` round trip. The kinematics tests run on the real robot and on
+The round-trip test asserts the exact bound of each damped inverse, `|J⁺J dq − dq| ≤ max_i (1 − σᵢ gᵢ) · |dq|`
+with the gain `gᵢ` of the method (same for `J J⁺`), not an arbitrary tolerance: `λ² / (σ_min² + λ²)` for
+`ldlt`, and for `svd` the same expression with `λᵢ²`, which is exact (0) for `σ_min ≥ √2 λ`. With fewer
+than 6 joints only the `dq` round trip is bounded, with more than 6 only the `dx` round trip. The
+comparison of both methods is skipped for 7 joints, where `ldlt` is ill conditioned at the tiny `λ` it
+needs (see "Constant damping"). The kinematics tests run on the real robot and on
 synthetic URDFs (`test/test_utils.hpp`): two generated from a DH table (the one of the robot, and one with
 arbitrary twists, offsets and negative lengths), the robot's DH table with a branched tool (prismatic jaw,
 tcp offset and rotated on the tool), and random chains of 1, 3, 6 and 7 joints with arbitrary origins and
