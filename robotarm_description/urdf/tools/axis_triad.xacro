@@ -72,7 +72,7 @@
         </joint>
         <link name="tcp"/>
         <joint name="tcp_joint" type="fixed">
-            <origin xyz="0 0 0.18" rpy="0 0 0"/>
+            <origin xyz="0 0 0.118" rpy="0 0 0"/>
             <parent link="axis_triad_body"/>
             <child link="tcp"/>
         </joint>

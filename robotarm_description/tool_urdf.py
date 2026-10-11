@@ -45,7 +45,7 @@ ATTACH_RPY = (0.0, 0.0, 0.0)
 # Link the tcp attaches to (unprefixed name as in the exported URDF, None = the root link) and the
 # tcp pose in that link's frame (meters / radians).
 TCP_PARENT_LINK = None
-TCP_XYZ = (0.0, 0.0, 0.18)
+TCP_XYZ = (0.0, 0.0, 0.118)
 TCP_RPY = (0.0, 0.0, 0.0)
 
 # Everything goes to its own folder, so the arm export in output/ is not overwritten. The mesh folder
