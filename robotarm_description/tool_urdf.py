@@ -23,11 +23,11 @@ from onshape_robotics_toolkit.robot import Robot
 from onshape_robotics_toolkit.utilities import setup_default_logging
 
 # The tool's own Onshape assembly (not the arm's).
-DOCUMENT_URL = "https://cad.onshape.com/documents/<document>/w/<workspace>/e/<element>"
+DOCUMENT_URL = "https://cad.onshape.com/documents/bae03a6d9f16e997a5f151e3/w/70cdc5e8d12a36a34bc87243/e/8dc34c729bac0ea9787dd3ac"
 
 # File name in urdf/tools/ (without .xacro), the value of the xacro arg tool:=..., the prefix of all
 # its link/joint names and its mesh folder meshes/tools/<TOOL_NAME>/.
-TOOL_NAME = "gripper_v1"
+TOOL_NAME = "axis_triad"
 
 # Name of the FASTENED mate between the assembly's Origin and the part that mounts on the flange,
 # like ROOT_MATE_NAME in robotarm_urdf.py.
@@ -45,13 +45,13 @@ ATTACH_RPY = (0.0, 0.0, 0.0)
 # Link the tcp attaches to (unprefixed name as in the exported URDF, None = the root link) and the
 # tcp pose in that link's frame (meters / radians).
 TCP_PARENT_LINK = None
-TCP_XYZ = (0.0, 0.0, 0.0)
+TCP_XYZ = (0.0, 0.0, 0.18)
 TCP_RPY = (0.0, 0.0, 0.0)
 
 # Everything goes to its own folder, so the arm export in output/ is not overwritten. The mesh folder
 # must be called "meshes": convert_tool_urdf_to_xacro finds the subfolders (collision/) by that name.
 OUTPUT_DIR = Path(f"output_{TOOL_NAME}")
-URDF_PATH = str(OUTPUT_DIR / f"{TOOL_NAME}.urdf")
+URDF_PATH = str(OUTPUT_DIR / f"{TOOL_NAME}_raw_export.urdf")
 MESH_DIR = str(OUTPUT_DIR / "meshes")
 XACRO_PATH = str(OUTPUT_DIR / f"{TOOL_NAME}.xacro")
 
@@ -74,7 +74,7 @@ URDFSerializer().save(robot,
                       mesh_options=MeshOptions(
                         visual_max_faces=100_000,                # decimate visuals; None = keep full resolution
                         collision_mode="convex_decomposition",   # "convex_hull" | "convex_decomposition" | "mesh"
-                        collision_max_hulls=16,                  # convex pieces per link (decomposition only)
+                        collision_max_hulls=8,                  # convex pieces per link (decomposition only)
                         collision_hull_max_vertices=64,          # vertices per convex piece
                         collision_concavity=0.05,                # lower = tighter fit, more pieces
                       ))

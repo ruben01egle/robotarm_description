@@ -1,0 +1,11 @@
+logging:
+  mode: default
+  console_level: INFO
+  file_level: DEBUG
+  file_path: postprocess.log
+  clear_existing_handlers: true
+  delay_file_creation: false
+names:
+  parts:
+    axis_triad_1:
+      name: body

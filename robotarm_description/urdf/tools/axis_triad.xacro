@@ -1,0 +1,80 @@
+<?xml version="1.0" ?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+    <xacro:macro name="tool" params="parent">
+        <link name="axis_triad_body">
+            <visual name="axis_triad_body_visual">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/body.stl"/>
+                </geometry>
+                <material name="axis_triad_body-material">
+                    <color rgba="0.5 0.5 0.5 1"/>
+                </material>
+            </visual>
+            <collision name="axis_triad_body_collision_0">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_0.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_1">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_1.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_2">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_2.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_3">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_3.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_4">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_4.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_5">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_5.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_6">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_6.stl"/>
+                </geometry>
+            </collision>
+            <collision name="axis_triad_body_collision_7">
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <mesh filename="package://robotarm_description/meshes/tools/axis_triad/collision/body_collision_7.stl"/>
+                </geometry>
+            </collision>
+            <inertial>
+                <mass value="0.052411175"/>
+                <inertia ixx="4.1009936e-05" iyy="4.0541985e-05" izz="3.7853763e-05" ixy="7.2673691e-07" ixz="-1.9348247e-06" iyz="-1.4557637e-06"/>
+                <origin xyz="0.0032182687 0.0043044361 0.011546892" rpy="0 0 0"/>
+            </inertial>
+        </link>
+        <joint name="axis_triad_attach_joint" type="fixed">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <parent link="${parent}"/>
+            <child link="axis_triad_body"/>
+        </joint>
+        <link name="tcp"/>
+        <joint name="tcp_joint" type="fixed">
+            <origin xyz="0 0 0.18" rpy="0 0 0"/>
+            <parent link="axis_triad_body"/>
+            <child link="tcp"/>
+        </joint>
+    </xacro:macro>
+</robot>
