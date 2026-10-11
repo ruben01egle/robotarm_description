@@ -31,9 +31,9 @@ TIP_LINK = "stage6"
 FLANGE_XYZ = (0.0, 0.0, 0.148)
 FLANGE_RPY = (0.0, 0.0, 0.0)
 
-URDF_PATH = "output/robotarm.urdf"
+URDF_PATH = "output/robotarm_raw_export.urdf"
 MESH_DIR = "output/meshes"
-XACRO_PATH = "output/robotarm.urdf.xacro"
+XACRO_PATH = "output/robotarm_geometry.xacro"
 
 setup_default_logging(file_path="robotarm.log", console_level="INFO")
 
@@ -51,6 +51,7 @@ URDFSerializer().save(robot,
                       URDF_PATH,
                       download_assets=True,
                       mesh_dir=MESH_DIR,
+                      reuse_downloads=True,
                       mesh_options=MeshOptions(
                         visual_max_faces=100_000,                # decimate visuals; None = keep full resolution
                         collision_mode="convex_decomposition",   # "convex_hull" | "convex_decomposition" | "mesh"

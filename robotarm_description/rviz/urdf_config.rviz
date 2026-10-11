@@ -55,15 +55,23 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        Base_1:
+        base:
           Value: true
-        Elbow_1:
+        flange:
           Value: true
-        Forearm_1:
+        stage1:
           Value: true
-        Shoulder_1:
+        stage2:
           Value: true
-        world:
+        stage3:
+          Value: true
+        stage4:
+          Value: true
+        stage5:
+          Value: true
+        stage6:
+          Value: true
+        tcp:
           Value: true
       Marker Scale: 1
       Name: TF
@@ -71,12 +79,16 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        world:
-          Base_1:
-            Shoulder_1:
-              Elbow_1:
-                Forearm_1:
-                  {}
+        base:
+          stage1:
+            stage2:
+              stage3:
+                stage4:
+                  stage5:
+                    stage6:
+                      flange:
+                        tcp:
+                          {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -93,31 +105,50 @@ Visualization Manager:
       Enabled: true
       Links:
         All Links Enabled: true
-        Base_1:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        Elbow_1:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
-        Forearm_1:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         Link Tree Style: Links in Alphabetic Order
-        Shoulder_1:
+        base:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        world:
+        flange:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        stage1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        stage2:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        stage3:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        stage4:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        stage5:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        stage6:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        tcp:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -132,7 +163,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: Base_1
+    Fixed Frame: base
     Frame Rate: 30
   Name: root
   Tools:
