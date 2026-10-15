@@ -1,7 +1,7 @@
 // Tests for RobotarmRbd. Linked without rclcpp on purpose: if the library pulls in anything from ROS,
 // this test stops linking. The full URDF rejection matrix runs through the Kinematics wrapper in
 // kinematics_test.cpp, here the error reporting and the lifecycle of the ROS free class, the parsing
-// and checks of <inertial>, and the inverse dynamics on models that can be solved by hand. The
+// and checks of <inertial> and <armature>, and the inverse dynamics on models that can be solved by hand. The
 // comparison of the inverse dynamics of the real robot with Pinocchio is in rnea_pinocchio_test.cpp.
 
 #include <gtest/gtest.h>
@@ -170,6 +170,44 @@ TEST(RobotarmRbd, AnImplausibleInertialIsRejected)
     }
 }
 
+TEST(RobotarmRbd, ArmatureIsParsedPerJointAndDefaultsToZero)
+{
+    // <armature> is a custom element urdfdom drops, read from the raw XML; axis1 has none
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(replace_all(two_joint_urdf(), R"(<joint name="axis2" type="revolute">)",
+        R"(<joint name="axis2" type="revolute"><armature value="0.04"/>)"), {})) << rbd.last_error();
+
+    double armature = -1.0;
+    ASSERT_TRUE(rbd.get_joint_armature("axis1", armature)) << rbd.last_error();
+    EXPECT_EQ(armature, 0.0);
+    ASSERT_TRUE(rbd.get_joint_armature("axis2", armature)) << rbd.last_error();
+    EXPECT_EQ(armature, 0.04);
+
+    Eigen::VectorXd armatures;  // not presized: the getter resizes
+    ASSERT_TRUE(rbd.get_joint_armatures(armatures)) << rbd.last_error();
+    ASSERT_EQ(armatures.size(), 2);
+    EXPECT_EQ(armatures[0], 0.0);
+    EXPECT_EQ(armatures[1], 0.04);
+
+    armature = 42.0;
+    EXPECT_FALSE(rbd.get_joint_armature("no_such_joint", armature));
+    EXPECT_NE(std::string(rbd.last_error()).find("no_such_joint"), std::string::npos) << rbd.last_error();
+    EXPECT_EQ(armature, 42.0);
+}
+
+TEST(RobotarmRbd, AnInvalidArmatureIsRejected)
+{
+    for (const char * armature : {R"(<armature value="-0.1"/>)", R"(<armature value="abc"/>)",
+            R"(<armature value="nan"/>)", R"(<armature value="inf"/>)", R"(<armature/>)"})
+    {
+        SCOPED_TRACE(armature);
+        robotarm_rbd::RobotarmRbd rbd;
+        EXPECT_FALSE(rbd.initialize(replace_all(two_joint_urdf(), R"(<joint name="axis2" type="revolute">)",
+            std::string(R"(<joint name="axis2" type="revolute">)") + armature), {}));
+        EXPECT_NE(std::string(rbd.last_error()).find("axis2"), std::string::npos) << rbd.last_error();
+    }
+}
+
 TEST(RobotarmRbd, AMalformedUrdfFailsWithAMessage)
 {
     robotarm_rbd::RobotarmRbd rbd;
@@ -233,6 +271,13 @@ TEST(RobotarmRbd, GettersFailBeforeInitialiseWithAMessage)
     EXPECT_FALSE(rbd.get_joint_names(names));
     EXPECT_STREQ(rbd.last_error(), "Not initialised");
     EXPECT_EQ(names, std::vector<std::string>{"keep"});
+
+    double armature = 42.0;
+    Eigen::VectorXd armatures = Eigen::VectorXd::Constant(2, 42.0);
+    EXPECT_FALSE(rbd.get_joint_armature("axis1", armature));
+    EXPECT_FALSE(rbd.get_joint_armatures(armatures));
+    EXPECT_EQ(armature, 42.0);
+    EXPECT_TRUE((armatures.array() == 42.0).all());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -440,6 +485,30 @@ TEST(RecursiveNewtonEuler, PendulumMatchesTheEquationOfMotion)
                 // one joint: no Coriolis term, dq must not change the result
                 const double expected =
                     (pend_Iyy + pend_m * pend_L * pend_L) * ddq - pend_m * g * pend_L * std::cos(q);
+                EXPECT_NEAR(tau[0], expected, 1e-12);
+            }
+        }
+    }
+}
+
+TEST(RecursiveNewtonEuler, PendulumArmatureAddsToTheInertiaAboutTheAxis)
+{
+    // the reflected drive inertia only sees the joint acceleration:
+    // tau = (I_yy + m L² + I_a) q̈ - m g L cos q
+    const double I_a = 0.07;
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(replace_all(pendulum_urdf(), R"(<joint name="axis1" type="revolute">)",
+        R"(<joint name="axis1" type="revolute"><armature value="0.07"/>)"), {})) << rbd.last_error();
+
+    const double g = 9.81;
+    Eigen::VectorXd tau(1);
+    for (const double q : {-0.7, 0.0, 1.2}) {
+        for (const double dq : {0.0, 3.0}) {
+            for (const double ddq : {0.0, 2.0, -4.0}) {
+                ASSERT_TRUE(rbd.recursive_newton_euler(vec1(q), vec1(dq), vec1(ddq), tau))
+                    << rbd.last_error();
+                const double expected =
+                    (pend_Iyy + pend_m * pend_L * pend_L + I_a) * ddq - pend_m * g * pend_L * std::cos(q);
                 EXPECT_NEAR(tau[0], expected, 1e-12);
             }
         }

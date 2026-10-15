@@ -21,6 +21,7 @@
   <depend>kinematics_interface</depend>
   <depend>urdf</depend>
   <depend>urdfdom</depend>
+  <depend>tinyxml2_vendor</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>eigen</depend>

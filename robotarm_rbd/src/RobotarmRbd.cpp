@@ -1,5 +1,6 @@
 #include "robotarm_rbd/RobotarmRbd.hpp"
 
+#include <tinyxml2.h>
 #include <urdf_parser/urdf_parser.h>
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <sstream>
+#include <unordered_map>
 
 namespace
 {
@@ -44,6 +46,20 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
     if (!model) {
         return fail("Failed to parse robot_description");
     }
+
+	// urdfdom drops unknown joint children, so <armature> is read from the raw XML: index the joint
+	// elements by name, read per moving joint below
+	tinyxml2::XMLDocument doc;
+	if (doc.Parse(robot_description.c_str()) != tinyxml2::XML_SUCCESS || !doc.FirstChildElement("robot")) {
+		return fail("Failed to parse robot_description as XML");
+	}
+	std::unordered_map<std::string, const tinyxml2::XMLElement *> joints_xml;
+	for (const tinyxml2::XMLElement * e = doc.FirstChildElement("robot")->FirstChildElement("joint"); e;
+		 e = e->NextSiblingElement("joint")) {
+		if (const char * name = e->Attribute("name")) {
+			joints_xml[name] = e;
+		}
+	}
 
     // Walk root -> tip so joints_ ends up in kinematic order, not map/alphabetical order.
     urdf::LinkConstSharedPtr link_urdf = model->getRoot();
@@ -118,6 +134,17 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
 		joint.limits_.max = l.upper;
 		joint.limits_.velocity = l.velocity;
 		joint.limits_.effort = l.effort;
+
+		// armature is optional, a joint without <armature> has none
+		const auto joint_xml = joints_xml.find(joint_urdf->name);
+		const tinyxml2::XMLElement * armature_xml = joint_xml != joints_xml.end()
+			? joint_xml->second->FirstChildElement("armature") : nullptr;
+		if (armature_xml) {
+			if (armature_xml->QueryDoubleAttribute("value", &joint.armature_) != tinyxml2::XML_SUCCESS
+				|| !std::isfinite(joint.armature_) || joint.armature_ < 0.0) {
+				return fail("Joint %s has an invalid armature", joint_urdf->name.c_str());
+			}
+		}
 
 		// extract isometry
 		joint.joint_origin_in_parent_ = joint_origin_to_isometry(joint_urdf);
@@ -483,7 +510,7 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 		data_.F[i] = F_dyn + R_next*F_next;
 		data_.M[i] = I_com*data_.dot_w[i] + data_.w[i].cross(I_com*data_.w[i]) + r_com.cross(F_dyn)
 				   + R_next*M_next + r_next.cross(R_next*F_next);
-		tau[i] = data_.M[i].dot(ax);
+		tau[i] = data_.M[i].dot(ax) + joints_[i].armature_*ddq[i];
 
 		R_next = data_.T[i].linear();
 		r_next = data_.T[i].translation();
@@ -550,6 +577,32 @@ bool robotarm_rbd::RobotarmRbd::get_joint_limits(std::vector<Limits>& limits)
 	limits.reserve(joints_.size());
 	for (const auto & j : joints_) {
 		limits.push_back(j.limits_);
+	}
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::get_joint_armature(const std::string& joint_name, double& armature)
+{
+    if (!initialised_) {
+		return fail("Not initialised");
+	}
+	for (const auto & j : joints_) {
+		if (j.joint_name_ == joint_name) {
+			armature = j.armature_;
+			return true;
+		}
+	}
+	return fail("Unknown joint %s", joint_name.c_str());
+}
+
+bool robotarm_rbd::RobotarmRbd::get_joint_armatures(Eigen::VectorXd& armatures)
+{
+    if (!initialised_) {
+		return fail("Not initialised");
+	}
+	armatures.resize(static_cast<Eigen::Index>(joints_.size()));
+	for (size_t i = 0; i < joints_.size(); ++i) {
+		armatures[static_cast<Eigen::Index>(i)] = joints_[i].armature_;
 	}
     return true;
 }

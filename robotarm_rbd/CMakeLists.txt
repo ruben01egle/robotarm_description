@@ -20,8 +20,11 @@ find_package(sensor_msgs REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(urdfdom REQUIRED)
+find_package(tinyxml2_vendor REQUIRED)
+find_package(TinyXML2 REQUIRED)
 
-# ROS free rigid body model (RobotarmRbd): URDF parsing via urdfdom and the calculations, Eigen only.
+# ROS free rigid body model (RobotarmRbd): URDF parsing via urdfdom (tinyxml2 for the custom <armature>)
+# and the calculations, Eigen only.
 # Kept as its own library so nothing from rclcpp can slip in unnoticed.
 add_library(${PROJECT_NAME}_core SHARED
   src/RobotarmRbd.cpp
@@ -33,6 +36,7 @@ target_include_directories(${PROJECT_NAME}_core PUBLIC
 )
 target_link_libraries(${PROJECT_NAME}_core
   urdfdom::urdfdom_model
+  tinyxml2::tinyxml2
   Eigen3::Eigen
 )
 
@@ -117,6 +121,7 @@ ament_export_dependencies(
   rclcpp
   urdf
   urdfdom
+  tinyxml2_vendor
   eigen3_cmake_module
   Eigen3
 )
@@ -179,6 +184,7 @@ if(BUILD_TESTING)
   target_compile_features(kinematics_malloc_test PUBLIC cxx_std_17)
   target_link_libraries(kinematics_malloc_test
     urdfdom::urdfdom_model
+    tinyxml2::tinyxml2
     kinematics_interface::kinematics_interface
     pluginlib::pluginlib
     ament_index_cpp::ament_index_cpp

@@ -5,8 +5,10 @@
 // free tests can use it too.
 
 #include <cstdio>
+#include <regex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 
@@ -79,6 +81,29 @@ inline std::string real_urdf_with_test_tool()
     }
     urdf.erase(begin, end + std::string("</joint>").size() - begin);
     urdf.insert(urdf.rfind("</robot>"), tool);
+    return urdf;
+}
+
+// armatures of real_urdf_with_test_armatures(), axis1 .. axis6, all different and nonzero
+inline const std::vector<double> & test_armatures()
+{
+    static const std::vector<double> values = {0.05, 0.08, 0.03, 0.012, 0.007, 0.004};
+    return values;
+}
+
+// The real URDF with the armatures of test_armatures() on axis1 .. axis6. Whatever <armature> the
+// export brings is removed first, so the test does not depend on the values in robotarm_description.
+inline std::string real_urdf_with_test_armatures()
+{
+    std::string urdf = std::regex_replace(real_urdf(), std::regex(R"(<armature[^>]*/>)"), "");
+    for (size_t i = 0; i < test_armatures().size(); ++i) {
+        const std::regex joint("(<joint name=\"axis" + std::to_string(i + 1) + "\"[^>]*>)");
+        if (!std::regex_search(urdf, joint)) {
+            throw std::runtime_error("real URDF: no joint axis" + std::to_string(i + 1));
+        }
+        urdf = std::regex_replace(urdf, joint,
+            "$1<armature value=\"" + std::to_string(test_armatures()[i]) + "\"/>");
+    }
     return urdf;
 }
 

@@ -92,6 +92,7 @@ protected:
         std::string child_link_name_;
         Limits limits_;
         InertialParams inertia_;  // of child_link, the body this joint moves
+        double armature_ = 0.0;   // reflected drive inertia [kg m²] from <armature>, 0 if the joint has none
         // joint origin = link cs of child_link
         Eigen::Isometry3d joint_origin_in_parent_ = Eigen::Isometry3d::Identity();
         Eigen::Vector3d joint_axis_in_child_ = Eigen::Vector3d::Zero();
@@ -169,6 +170,7 @@ public:
     // F_tcp, M_tcp: external wrench at the TCP, expressed in the TCP frame.
     // Convention: force/moment exerted ON the environment (not the reaction measured by a F/T sensor)
     // gravity: physical gravity vector in the root link frame.
+    // The armature of each joint adds armature * ddq to its torque.
     // Fails on a kinematics only model (no <inertial>), unless gravity, dq and ddq all zero (pure TCP wrench).
     bool recursive_newton_euler(
         const Eigen::VectorXd &q,
@@ -185,6 +187,10 @@ public:
     // root plus the child of each joint (joint i connects link i and i+1), the tcp is not included.
     bool get_joint_names(std::vector<std::string>& names);
     bool get_joint_limits(std::vector<Limits>& limits);
+    // reflected drive inertia [kg m²] of one joint, fails for an unknown joint name
+    bool get_joint_armature(const std::string& joint_name, double& armature);
+    // all armatures in joint_pos order, armatures is resized to get_dof()
+    bool get_joint_armatures(Eigen::VectorXd& armatures);
     bool get_link_names(std::vector<std::string>& names);
     bool get_base_link_name(std::string& name);
     bool get_tcp_link_name(std::string& name);

@@ -112,6 +112,11 @@ root ─axis1─▶ link1 ─axis2─▶ ... ─axisN─▶ linkN ─flange_join
   (tolerance: `1e-6 · trace`). A point mass (zero tensor) and a massless link (zero mass and tensor)
   are fine. Note: urdfdom does not parse `nan`/`inf`, it logs an error and hands out an all-zero
   `<inertial>`, i.e. a massless link.
+- `<armature value="..."/>` in a revolute joint (custom element of the onshape-robotics-toolkit export):
+  the reflected drive inertia in kg m², optional, a joint without one has 0. Must be finite and `>= 0`.
+  urdfdom drops unknown elements, so it is read from the raw XML with tinyxml2. Available through
+  `RobotarmRbd::get_joint_armature(name, value)` and `get_joint_armatures(Eigen::VectorXd &)` (joint_pos
+  order, resized to N).
 
 ## Forward kinematics
 
@@ -241,7 +246,9 @@ bool recursive_newton_euler(const Eigen::VectorXd &q, const Eigen::VectorXd &dq,
 
 Given the motion (q, q̇, q̈) and the wrench the tool exerts on its environment, it returns the joint
 torques τ that produce exactly this motion: `τ = M(q) q̈ + C(q, q̇) q̇ + g(q) + Jᵀ(q) w_tcp`. It never
-builds `M`, `C` or `J`, it costs O(N) and does not allocate if `tau` is pre-sized.
+builds `M`, `C` or `J`, it costs O(N) and does not allocate if `tau` is pre-sized. The armature `I_a`
+of each joint (see "URDF constraints") is part of `M`: joint `i` gets `I_a,i q̈_i` on top, i.e. `M` gains
+`diag(I_a)`, the same model as Pinocchio's `model.armature`.
 
 | use                         | call                                                     |
 |-----------------------------|----------------------------------------------------------|

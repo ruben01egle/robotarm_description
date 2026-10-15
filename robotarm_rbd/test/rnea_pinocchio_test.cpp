@@ -9,8 +9,13 @@
 // Base_1 goes to the universe (irrelevant for a fixed base, as for us), and flange, tool and tcp go to
 // joint 6, which is exactly what our parser folds into the last moving link.
 //
-// Every test runs twice: on the real robot as it is ("none", tcp on the flange) and with a gripper
-// that has mass between flange and tcp ("tool", see real_urdf_with_test_tool).
+// Every test runs three times: on the real robot as it is ("none", tcp on the flange), with a gripper
+// that has mass between flange and tcp ("tool", see real_urdf_with_test_tool), and with nonzero
+// armatures on all joints ("armature", see real_urdf_with_test_armatures).
+//
+// Pinocchio's URDF parser ignores <armature> like urdfdom, so model_.armature is set by hand from the
+// values written into the URDF. Its rnea adds armature * ddq and its crba adds the armature to the
+// diagonal of M, the same model as ours.
 
 #include <gtest/gtest.h>
 
@@ -45,7 +50,13 @@ protected:
     {
         std::string urdf;
         try {
-            urdf = GetParam() == "tool" ? test_utils::real_urdf_with_test_tool() : test_utils::real_urdf();
+            if (GetParam() == "tool") {
+                urdf = test_utils::real_urdf_with_test_tool();
+            } else if (GetParam() == "armature") {
+                urdf = test_utils::real_urdf_with_test_armatures();
+            } else {
+                urdf = test_utils::real_urdf();
+            }
         } catch (const std::exception & e) {
             FAIL() << e.what();
         }
@@ -57,6 +68,12 @@ protected:
         n_ = static_cast<Eigen::Index>(joint_names_.size());
 
         pinocchio::urdf::buildModelFromXML(urdf, model_);
+        expected_armatures_ = Eigen::VectorXd::Zero(n_);
+        if (GetParam() == "armature") {
+            ASSERT_EQ(test_utils::test_armatures().size(), static_cast<size_t>(n_));
+            expected_armatures_ = Eigen::Map<const Eigen::VectorXd>(test_utils::test_armatures().data(), n_);
+        }
+        model_.armature = expected_armatures_;
         data_ = pinocchio::Data(model_);
         rng_.seed(4711);
     }
@@ -118,6 +135,7 @@ protected:
     std::vector<robotarm_rbd::RobotarmRbd::Limits> limits_;
     std::string tcp_name_;
     Eigen::Index n_ = 0;
+    Eigen::VectorXd expected_armatures_;  // what the URDF carries, also given to Pinocchio
 
     pinocchio::Model model_;
     pinocchio::Data data_;
@@ -125,7 +143,7 @@ protected:
 };
 
 INSTANTIATE_TEST_SUITE_P(
-    Tools, RneaVsPinocchio, ::testing::Values("none", "tool"),
+    Tools, RneaVsPinocchio, ::testing::Values("none", "tool", "armature"),
     [](const ::testing::TestParamInfo<std::string> & info) {return info.param;});
 
 }  // namespace
@@ -149,6 +167,21 @@ TEST_P(RneaVsPinocchio, BothModelsHaveTheSameJointsAndMasses)
         our_mass += ours.mass;
     }
     EXPECT_GT(our_mass, 1.0) << "the real robot must come with its inertias";
+}
+
+TEST_P(RneaVsPinocchio, ArmaturesAreParsedFromTheUrdf)
+{
+    // to_string() in the helper rounds to 6 decimals, the test values have fewer
+    Eigen::VectorXd armatures;
+    ASSERT_TRUE(rbd_.get_joint_armatures(armatures)) << rbd_.last_error();
+    ASSERT_EQ(armatures.size(), n_);
+    EXPECT_LT((armatures - expected_armatures_).cwiseAbs().maxCoeff(), 1e-15)
+        << "ours " << armatures.transpose() << "\nurdf " << expected_armatures_.transpose();
+    for (Eigen::Index i = 0; i < n_; ++i) {
+        double armature = -1.0;
+        ASSERT_TRUE(rbd_.get_joint_armature(joint_names_[static_cast<size_t>(i)], armature));
+        EXPECT_EQ(armature, armatures[i]);
+    }
 }
 
 TEST_P(RneaVsPinocchio, TheToolMassIsFoldedIntoTheLastLink)
