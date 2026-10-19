@@ -245,21 +245,7 @@ bool robotarm_rbd::RobotarmRbd::RobotarmRbd::initialize(const std::string &robot
 	}
 
 	// init heap member
-	Eigen::Index n = joints_.size();
-	Eigen::Index r = std::min<Eigen::Index>(6, n);
-	j_cj_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
-	j_cji_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
-	j_jd2cd_ = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
-	j_inv_cd2jd_ =  Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(n, 6);
-	jtj_damped_ = Eigen::MatrixXd::Zero(n, n);
-	ldlt_ = Eigen::LDLT<Eigen::MatrixXd>(n);
-	sdinv_ = Eigen::VectorXd::Zero(r);
-	sdinv_ut_ = Eigen::MatrixXd::Zero(r, 6);
-	// J⁺ = V · diag(σᵢ / (σᵢ² + λᵢ²)) · Uᵀ only needs the r = min(6, n) singular directions,
-	// so thin U (6×r) and thin V (n×r)
-	j_svd_ = Eigen::MatrixXd::Zero(6, n);
-	svd_ = Eigen::JacobiSVD<Eigen::MatrixXd>(6, n, Eigen::ComputeThinU | Eigen::ComputeThinV);
-	data_.resize(n);
+	tmp_.resize(static_cast<Eigen::Index>(joints_.size()));
 
     initialised_ = true;
     return true;
@@ -276,8 +262,8 @@ bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(
 	}
 
 	// delta_q = J⁺ delta_x
-	if (!calculate_jacobian_inverse(q, link_name, j_inv_cd2jd_)) return false;
-	delta_q.noalias() = j_inv_cd2jd_ * delta_x;
+	if (!calculate_jacobian_inverse(q, link_name, tmp_.j_inv_cd2jd)) return false;
+	delta_q.noalias() = tmp_.j_inv_cd2jd * delta_x;
     return true;
 }
 
@@ -295,8 +281,8 @@ bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
 	}
 
 	// delta_x = J delta_q
-	if (!calculate_jacobian(q, link_name, j_jd2cd_)) return false;
-	delta_x.noalias() = j_jd2cd_ * delta_q;
+	if (!calculate_jacobian(q, link_name, tmp_.j_jd2cd)) return false;
+	delta_x.noalias() = tmp_.j_jd2cd * delta_q;
     return true;
 }
 
@@ -347,7 +333,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
 		return true;
 	}
 
-	j_cj_.setZero();
+	tmp_.j_cj.setZero();
 	Eigen::Isometry3d T_end;
 	if (!calculate_link_transform(q, link_name, T_end)) return false;
 	Eigen::Vector3d p_end = T_end.translation();
@@ -359,15 +345,15 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
 		Eigen::Vector3d joint_axis = T.linear() * joints_[i].joint_axis_in_child_;
 		Eigen::Vector3d p_i = T.translation();
 
-		j_cj_.block<3,1>(0, i) = joint_axis.cross(p_end - p_i);
-    	j_cj_.block<3,1>(3, i) = joint_axis;
+		tmp_.j_cj.block<3,1>(0, i) = joint_axis.cross(p_end - p_i);
+    	tmp_.j_cj.block<3,1>(3, i) = joint_axis;
 
 		if (joints_[i].child_link_name_ == link_name) {
 			break;
 		}
 	}
 
-	jacobian = j_cj_;
+	jacobian = tmp_.j_cj;
     return true;
 }
 
@@ -377,21 +363,21 @@ bool robotarm_rbd::RobotarmRbd::calculate_jinv_ldlt(
 	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
 {
     // q is validated by calculate_jacobian(), which is the first thing called here
-	if (!calculate_jacobian(q, link_name, j_cji_)) return false;
+	if (!calculate_jacobian(q, link_name, tmp_.j_cji)) return false;
 
 	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
 	// J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ -> (JᵀJ + λ²I)J⁺ = Jᵀ as MX = Jᵀ with:
-	// M = (JᵀJ + λ²I) (called jtj_damped_)
+	// M = (JᵀJ + λ²I) (called tmp_.jtj_damped)
 	// X = J⁺
-	jtj_damped_.noalias() = j_cji_.transpose() * j_cji_;
-	jtj_damped_.diagonal().array() += config_.lambda * config_.lambda;
+	tmp_.jtj_damped.noalias() = tmp_.j_cji.transpose() * tmp_.j_cji;
+	tmp_.jtj_damped.diagonal().array() += config_.lambda * config_.lambda;
 
 	// factor M once, and check that it worked
-	ldlt_.compute(jtj_damped_);
-	if (ldlt_.info() != Eigen::Success) {
+	tmp_.ldlt.compute(tmp_.jtj_damped);
+	if (tmp_.ldlt.info() != Eigen::Success) {
 		return fail("Factorization failed");
 	}
-	jacobian_inverse = ldlt_.solve(j_cji_.transpose());
+	jacobian_inverse = tmp_.ldlt.solve(tmp_.j_cji.transpose());
 
     return true;
 }
@@ -403,11 +389,11 @@ bool robotarm_rbd::RobotarmRbd::calculate_jinv_svd(
 	SingularityInfo *info)
 {
 	// q is validated by calculate_jacobian(), which is the first thing called here
-	if (!calculate_jacobian(q, link_name, j_cji_)) return false;
+	if (!calculate_jacobian(q, link_name, tmp_.j_cji)) return false;
 
-	j_svd_ = j_cji_;
-	svd_.compute(j_svd_);
-	const auto& S = svd_.singularValues();
+	tmp_.j_svd = tmp_.j_cji;
+	tmp_.svd.compute(tmp_.j_svd);
+	const auto& S = tmp_.svd.singularValues();
 	const Eigen::Index r = S.size();
 	double eps = std::sqrt(2) * config_.lambda;
 
@@ -420,15 +406,15 @@ bool robotarm_rbd::RobotarmRbd::calculate_jinv_svd(
 		if (S(i) < eps) {
 			lamdba_i_sq = (1 - (S(i)/eps)*(S(i)/eps)) * config_.lambda*config_.lambda;
 		}
-		sdinv_(i) = S(i) / (S(i)*S(i) + lamdba_i_sq);
+		tmp_.sdinv(i) = S(i) / (S(i)*S(i) + lamdba_i_sq);
 	}
 	// J⁺ = V Σ D⁻¹ Uᵀ
-	sdinv_ut_.noalias() = sdinv_.asDiagonal() * svd_.matrixU().transpose();
-	jacobian_inverse.noalias() = svd_.matrixV() * sdinv_ut_;
+	tmp_.sdinv_ut.noalias() = tmp_.sdinv.asDiagonal() * tmp_.svd.matrixU().transpose();
+	jacobian_inverse.noalias() = tmp_.svd.matrixV() * tmp_.sdinv_ut;
 
 	if (info != nullptr) {
 		info->singular_values = S;
-		info->U = svd_.matrixU();
+		info->U = tmp_.svd.matrixU();
 	}
 
     return true;
@@ -479,19 +465,19 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 	Eigen::Vector3d a_org_prev = -gravity;
 
 	for (size_t i=0; i<joints_.size(); ++i) {
-		data_.T[i] = joints_[i].transform(q[i]);
-		const Eigen::Matrix3d Rt = data_.T[i].linear().transpose();		// to child system
-		const Eigen::Vector3d r = data_.T[i].translation();
+		tmp_.T[i] = joints_[i].transform(q[i]);
+		const Eigen::Matrix3d Rt = tmp_.T[i].linear().transpose();		// to child system
+		const Eigen::Vector3d r = tmp_.T[i].translation();
 		const Eigen::Vector3d& r_com = joints_[i].inertia_.com;
 		const Eigen::Vector3d& ax = joints_[i].joint_axis_in_child_;
 
-		data_.w[i]		= Rt*w_prev + dq[i]*ax;
-		data_.dot_w[i]	= Rt*dot_w_prev + ddq[i]*ax + data_.w[i].cross(dq[i]*ax);
-		data_.a_org[i]	= Rt*(a_org_prev + dot_w_prev.cross(r) + w_prev.cross(w_prev.cross(r)));
-		data_.a_com[i]	= data_.a_org[i] + data_.dot_w[i].cross(r_com) + data_.w[i].cross(data_.w[i].cross(r_com));
+		tmp_.w[i]		= Rt*w_prev + dq[i]*ax;
+		tmp_.dot_w[i]	= Rt*dot_w_prev + ddq[i]*ax + tmp_.w[i].cross(dq[i]*ax);
+		tmp_.a_org[i]	= Rt*(a_org_prev + dot_w_prev.cross(r) + w_prev.cross(w_prev.cross(r)));
+		tmp_.a_com[i]	= tmp_.a_org[i] + tmp_.dot_w[i].cross(r_com) + tmp_.w[i].cross(tmp_.w[i].cross(r_com));
 
-		w_prev = data_.w[i]; dot_w_prev = data_.dot_w[i];
-		a_org_prev = data_.a_org[i];
+		w_prev = tmp_.w[i]; dot_w_prev = tmp_.dot_w[i];
+		a_org_prev = tmp_.a_org[i];
 	}
 
 	// backwards pass
@@ -505,19 +491,50 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 		const Eigen::Matrix3d& I_com = joints_[i].inertia_.com_inertia_in_joint;
 		const Eigen::Vector3d& r_com = joints_[i].inertia_.com;
 		const Eigen::Vector3d& ax  = joints_[i].joint_axis_in_child_;
-		const Eigen::Vector3d F_dyn = m*data_.a_com[i];
+		const Eigen::Vector3d F_dyn = m*tmp_.a_com[i];
 
-		data_.F[i] = F_dyn + R_next*F_next;
-		data_.M[i] = I_com*data_.dot_w[i] + data_.w[i].cross(I_com*data_.w[i]) + r_com.cross(F_dyn)
+		tmp_.F[i] = F_dyn + R_next*F_next;
+		tmp_.M[i] = I_com*tmp_.dot_w[i] + tmp_.w[i].cross(I_com*tmp_.w[i]) + r_com.cross(F_dyn)
 				   + R_next*M_next + r_next.cross(R_next*F_next);
-		tau[i] = data_.M[i].dot(ax) + joints_[i].armature_*ddq[i];
+		tau[i] = tmp_.M[i].dot(ax) + joints_[i].armature_*ddq[i];
 
-		R_next = data_.T[i].linear();
-		r_next = data_.T[i].translation();
-		F_next = data_.F[i];
-		M_next = data_.M[i];
+		R_next = tmp_.T[i].linear();
+		r_next = tmp_.T[i].translation();
+		F_next = tmp_.F[i];
+		M_next = tmp_.M[i];
 	}
 
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::calculate_mass_matrix(const Eigen::VectorXd &q, Eigen::MatrixXd &mass_matrix)
+{
+	if (!check_input(q, "q")) return false;
+	const auto n = static_cast<Eigen::Index>(joints_.size());
+
+	for (Eigen::Index i=0; i<n; ++i) {
+		tmp_.ddq_unit.setZero();
+		tmp_.ddq_unit(i) = 1;
+		if (!recursive_newton_euler(q,
+									tmp_.dq_zero,				// zero velocity terms
+									tmp_.ddq_unit,				// zero all axis accelerations but axis i
+									tmp_.mass_matrix_col,
+									Eigen::Vector3d::Zero(),	// zero external forces terms
+									Eigen::Vector3d::Zero(),
+									Eigen::Vector3d::Zero()		// zero gravity	terms
+									))	return false;
+		tmp_.mass_matrix.col(i) = tmp_.mass_matrix_col;
+	}
+	// RNEA columns are symmetric up to rounding, average the pairs to make it exact
+	for (Eigen::Index c = 0; c < n; ++c) {
+		for (Eigen::Index r = c + 1; r < n; ++r) {
+			const double avg = 0.5 * (tmp_.mass_matrix(r, c) + tmp_.mass_matrix(c, r));
+			tmp_.mass_matrix(r, c) = avg;
+			tmp_.mass_matrix(c, r) = avg;
+		}
+	}
+
+	mass_matrix = tmp_.mass_matrix;
     return true;
 }
 

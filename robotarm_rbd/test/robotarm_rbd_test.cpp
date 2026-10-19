@@ -731,3 +731,153 @@ TEST(RecursiveNewtonEuler, InvalidInputFailsWithAMessageNamingIt)
     EXPECT_FALSE(rbd.recursive_newton_euler(zero, zero, zero, tau, Eigen::Vector3d(INFINITY, 0, 0)));
     EXPECT_EQ(tau, Eigen::VectorXd(Eigen::Vector2d(42, 42)));
 }
+
+// ---------------------------------------------------------------------------------------------
+// mass matrix (against Pinocchio's crba on the real robot in rnea_pinocchio_test.cpp)
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+
+// dof revolute joints with an <inertial> on every link, axes cycling through z, y, x so the mass
+// matrix is fully coupled. More than 6 joints catches buffers sized by min(6, n) instead of n.
+std::string inertial_chain_urdf(size_t dof)
+{
+    const char * axes[] = {"0 0 1", "0 1 0", "1 0 0"};
+    std::string links = R"(<link name="link0"/>)";
+    std::string joints;
+    for (size_t i = 1; i <= dof; ++i) {
+        const std::string link = "link" + std::to_string(i);
+        const std::string parent = "link" + std::to_string(i - 1);
+        links += R"(
+  <link name=")" + link + R"(">
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.01" iyy="0.02" izz="0.015" ixy="0.001" ixz="0" iyz="0.002"/>
+      <origin xyz="0.05 0.02 0.1" rpy="0.1 0.2 0.3"/>
+    </inertial>
+  </link>)";
+        joints += R"(
+  <joint name="axis)" + std::to_string(i) + R"(" type="revolute">
+    <parent link=")" + parent + R"("/> <child link=")" + link + R"("/>
+    <origin xyz="0.02 0 0.2" rpy="0 0 0"/> <axis xyz=")" + axes[(i - 1) % 3] + R"("/>
+    <limit lower="-3" upper="3" velocity="1" effort="1"/>
+  </joint>)";
+    }
+    return R"(<robot name="chain">
+  )" + links + R"(
+  <link name="flange"/>
+  <link name="tcp"/>)" + joints + R"(
+  <joint name="flange_joint" type="fixed">
+    <parent link="link)" + std::to_string(dof) + R"("/> <child link="flange"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+  <joint name="tcp_joint" type="fixed">
+    <parent link="flange"/> <child link="tcp"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>)";
+}
+
+// The defining properties of M(q): exactly symmetric, positive definite, and tau = M ddq for the
+// RNEA without velocity, gravity and tcp wrench.
+void expect_mass_matrix_properties(robotarm_rbd::RobotarmRbd & rbd, const Eigen::VectorXd & q)
+{
+    const Eigen::Index n = q.size();
+    Eigen::MatrixXd M(n, n);
+    ASSERT_TRUE(rbd.calculate_mass_matrix(q, M)) << rbd.last_error();
+    ASSERT_EQ(M.rows(), n);
+    ASSERT_EQ(M.cols(), n);
+
+    EXPECT_EQ((M - M.transpose()).cwiseAbs().maxCoeff(), 0.0) << "symmetrised, so exactly symmetric\n" << M;
+    const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(M);
+    EXPECT_GT(eig.eigenvalues().minCoeff(), 0.0) << "positive definite\n" << M;
+
+    const Eigen::Vector3d zero3 = Eigen::Vector3d::Zero();
+    const Eigen::VectorXd zero = Eigen::VectorXd::Zero(n);
+    Eigen::VectorXd tau(n);
+    for (int k = 0; k < 5; ++k) {
+        const Eigen::VectorXd ddq = Eigen::VectorXd::Random(n);
+        ASSERT_TRUE(rbd.recursive_newton_euler(q, zero, ddq, tau, zero3, zero3, zero3)) << rbd.last_error();
+        EXPECT_LT((M * ddq - tau).cwiseAbs().maxCoeff(), 1e-12)
+            << "M ddq " << (M * ddq).transpose() << "\nrnea  " << tau.transpose();
+    }
+}
+
+}  // namespace
+
+TEST(MassMatrix, PendulumIsTheInertiaAboutTheAxis)
+{
+    // one joint: M = I_yy + m L², independent of q, plus the armature if there is one
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(pendulum_urdf(), {})) << rbd.last_error();
+    Eigen::MatrixXd M(1, 1);
+    for (const double q : {-2.0, 0.0, 1.2}) {
+        ASSERT_TRUE(rbd.calculate_mass_matrix(vec1(q), M)) << rbd.last_error();
+        EXPECT_NEAR(M(0, 0), pend_Iyy + pend_m * pend_L * pend_L, 1e-12);
+    }
+
+    robotarm_rbd::RobotarmRbd with_armature;
+    ASSERT_TRUE(with_armature.initialize(replace_all(pendulum_urdf(), R"(<joint name="axis1" type="revolute">)",
+        R"(<joint name="axis1" type="revolute"><armature value="0.07"/>)"), {})) << with_armature.last_error();
+    ASSERT_TRUE(with_armature.calculate_mass_matrix(vec1(0.4), M)) << with_armature.last_error();
+    EXPECT_NEAR(M(0, 0), pend_Iyy + pend_m * pend_L * pend_L + 0.07, 1e-12);
+}
+
+TEST(MassMatrix, TwoJointsIsSymmetricPositiveDefiniteAndMatchesTheRnea)
+{
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), {})) << rbd.last_error();
+    for (const double q2 : {-0.9, 0.0, 0.6}) {
+        SCOPED_TRACE("q2 " + std::to_string(q2));
+        expect_mass_matrix_properties(rbd, Eigen::Vector2d(0.4, q2));
+    }
+}
+
+TEST(MassMatrix, ChainsWithMoreThanSixJointsWork)
+{
+    // the buffers must be sized by the joint count, not by min(6, n) like the svd ones
+    for (const size_t dof : {3u, 6u, 7u, 9u}) {
+        SCOPED_TRACE("dof " + std::to_string(dof));
+        robotarm_rbd::RobotarmRbd rbd;
+        ASSERT_TRUE(rbd.initialize(inertial_chain_urdf(dof), {})) << rbd.last_error();
+        ASSERT_EQ(rbd.get_dof(), dof);
+        const auto n = static_cast<Eigen::Index>(dof);
+        expect_mass_matrix_properties(rbd, Eigen::VectorXd::Zero(n));
+        expect_mass_matrix_properties(rbd, Eigen::VectorXd::LinSpaced(n, -1.0, 1.0));
+    }
+}
+
+TEST(MassMatrix, AnUnsizedOutputIsResized)
+{
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), {})) << rbd.last_error();
+    Eigen::MatrixXd M;
+    ASSERT_TRUE(rbd.calculate_mass_matrix(Eigen::Vector2d(0.4, -0.3), M)) << rbd.last_error();
+    EXPECT_EQ(M.rows(), 2);
+    EXPECT_EQ(M.cols(), 2);
+}
+
+TEST(MassMatrix, FailuresLeaveTheOutputUntouched)
+{
+    const Eigen::MatrixXd untouched = Eigen::MatrixXd::Constant(2, 2, 42.0);
+    Eigen::MatrixXd M = untouched;
+
+    robotarm_rbd::RobotarmRbd rbd;
+    EXPECT_FALSE(rbd.calculate_mass_matrix(Eigen::Vector2d::Zero(), M));
+    EXPECT_STREQ(rbd.last_error(), "Not initialised");
+
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), {})) << rbd.last_error();
+    EXPECT_FALSE(rbd.calculate_mass_matrix(Eigen::Vector3d::Zero(), M));
+    EXPECT_STREQ(rbd.last_error(), "Unexpected q dimension");
+    EXPECT_FALSE(rbd.calculate_mass_matrix(Eigen::Vector2d(0, NAN), M));
+    EXPECT_STREQ(rbd.last_error(), "q contains NaN or inf");
+
+    // without inertias there is no mass matrix
+    robotarm_rbd::RobotarmRbd kinematics_only;
+    ASSERT_TRUE(kinematics_only.initialize(two_joint_urdf("0 1 0", "", ""), {})) << kinematics_only.last_error();
+    EXPECT_FALSE(kinematics_only.calculate_mass_matrix(Eigen::Vector2d::Zero(), M));
+    EXPECT_STREQ(kinematics_only.last_error(), "Not all links have a valid inertia");
+
+    EXPECT_EQ(M, untouched);
+}

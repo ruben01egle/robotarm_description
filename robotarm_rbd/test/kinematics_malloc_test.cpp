@@ -202,6 +202,26 @@ TEST(MallocTestRnea, PresizedInverseDynamicsDoesNotAllocate)
     EXPECT_TRUE(allocates([&] {rbd.recursive_newton_euler(zero, zero, zero, tau_unsized);}));
 }
 
+TEST(MallocTestRnea, PresizedMassMatrixDoesNotAllocate)
+{
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(test_utils::real_urdf(), {})) << rbd.last_error();
+    std::mt19937 rng(4711);
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(6, 6);
+
+    for (int n = 0; n < 30; ++n) {
+        const Eigen::VectorXd q = test_utils::random_vector(rng, 6, 1.0);
+        bool ok = false;
+        EXPECT_FALSE(allocates([&] {ok = rbd.calculate_mass_matrix(q, M);}));
+        EXPECT_TRUE(ok) << rbd.last_error();
+    }
+
+    // negative control: an unsized M has to be allocated
+    const Eigen::VectorXd zero = Eigen::VectorXd::Zero(6);
+    Eigen::MatrixXd M_unsized;
+    EXPECT_TRUE(allocates([&] {rbd.calculate_mass_matrix(zero, M_unsized);}));
+}
+
 TEST_F(MallocTest, ATemporaryFromAPlainProductAssignmentIsCaught)
 {
     // Why the plugin uses .noalias(): "y = A * x" builds a temporary, which is a heap allocation

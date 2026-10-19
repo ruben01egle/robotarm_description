@@ -264,6 +264,25 @@ TEST_P(RneaVsPinocchio, MassMatrixFromUnitAccelerations)
     std::printf("mass matrix: max |M - M_crba| = %.3g kg m^2\n", max_err);
 }
 
+TEST_P(RneaVsPinocchio, CalculateMassMatrixMatchesCrba)
+{
+    double max_err = 0.0;
+    Eigen::MatrixXd M(n_, n_);
+    for (int n = 0; n < 50; ++n) {
+        const Eigen::VectorXd q = n == 0 ? Eigen::VectorXd::Zero(n_) : random_q();
+        ASSERT_TRUE(rbd_.calculate_mass_matrix(q, M)) << rbd_.last_error();
+        EXPECT_EQ((M - M.transpose()).cwiseAbs().maxCoeff(), 0.0) << "symmetrised, so exactly symmetric";
+
+        // crba only fills the upper triangle
+        pinocchio::crba(model_, data_, q);
+        Eigen::MatrixXd M_pin = data_.M;
+        M_pin.triangularView<Eigen::StrictlyLower>() = M_pin.transpose().triangularView<Eigen::StrictlyLower>();
+        EXPECT_LT((M - M_pin).cwiseAbs().maxCoeff(), 1e-10) << "ours\n" << M << "\npin\n" << M_pin;
+        max_err = std::max(max_err, (M - M_pin).cwiseAbs().maxCoeff());
+    }
+    std::printf("calculate_mass_matrix: max |M - M_crba| = %.3g kg m^2\n", max_err);
+}
+
 TEST_P(RneaVsPinocchio, FullDynamicsForRandomStates)
 {
     double max_err = 0.0, max_tau = 0.0;
