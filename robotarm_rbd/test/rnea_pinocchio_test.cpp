@@ -130,6 +130,17 @@ protected:
         return tau;
     }
 
+    // Pinocchio's crba, both triangles filled (it only computes the upper one). Called through
+    // Eigen::Ref<const VectorXd>: that is the type libpinocchio_default instantiates crba for, a
+    // plain VectorXd would compile the whole algorithm into this test (~20 s).
+    Eigen::MatrixXd crba_full(const Eigen::VectorXd & q)
+    {
+        pinocchio::crba(model_, data_, Eigen::Ref<const Eigen::VectorXd>(q));
+        Eigen::MatrixXd M = data_.M;
+        M.triangularView<Eigen::StrictlyLower>() = M.transpose().triangularView<Eigen::StrictlyLower>();
+        return M;
+    }
+
     test_utils::TestableRbd rbd_;
     std::vector<std::string> joint_names_, link_names_;
     std::vector<robotarm_rbd::RobotarmRbd::Limits> limits_;
@@ -255,9 +266,7 @@ TEST_P(RneaVsPinocchio, MassMatrixFromUnitAccelerations)
         const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(M);
         EXPECT_GT(eig.eigenvalues().minCoeff(), 0.0) << "M(q) must be positive definite";
 
-        pinocchio::crba(model_, data_, q);
-        Eigen::MatrixXd M_pin = data_.M;
-        M_pin.triangularView<Eigen::StrictlyLower>() = M_pin.transpose().triangularView<Eigen::StrictlyLower>();
+        const Eigen::MatrixXd M_pin = crba_full(q);
         EXPECT_LT((M - M_pin).cwiseAbs().maxCoeff(), 1e-10) << "ours\n" << M << "\npin\n" << M_pin;
         max_err = std::max(max_err, (M - M_pin).cwiseAbs().maxCoeff());
     }
@@ -273,14 +282,40 @@ TEST_P(RneaVsPinocchio, CalculateMassMatrixMatchesCrba)
         ASSERT_TRUE(rbd_.calculate_mass_matrix(q, M)) << rbd_.last_error();
         EXPECT_EQ((M - M.transpose()).cwiseAbs().maxCoeff(), 0.0) << "symmetrised, so exactly symmetric";
 
-        // crba only fills the upper triangle
-        pinocchio::crba(model_, data_, q);
-        Eigen::MatrixXd M_pin = data_.M;
-        M_pin.triangularView<Eigen::StrictlyLower>() = M_pin.transpose().triangularView<Eigen::StrictlyLower>();
+        const Eigen::MatrixXd M_pin = crba_full(q);
         EXPECT_LT((M - M_pin).cwiseAbs().maxCoeff(), 1e-10) << "ours\n" << M << "\npin\n" << M_pin;
         max_err = std::max(max_err, (M - M_pin).cwiseAbs().maxCoeff());
     }
     std::printf("calculate_mass_matrix: max |M - M_crba| = %.3g kg m^2\n", max_err);
+}
+
+TEST_P(RneaVsPinocchio, TaskSpaceInertiaMatchesCrbaAndFrameJacobian)
+{
+    // Λ = (J M⁻¹ Jᵀ + λ²I)⁻¹ with Pinocchio's M (crba) and J (tcp, LOCAL_WORLD_ALIGNED, the same
+    // convention as ours, see ForwardKinematicsAndJacobian)
+    const double lambda = robotarm_rbd::RobotarmRbd::Config{}.lambda;
+    const pinocchio::FrameIndex tcp_id = model_.getFrameId(tcp_name_);
+    ASSERT_LT(tcp_id, model_.frames.size());
+    using Matrix6 = Eigen::Matrix<double, 6, 6>;
+
+    double max_rel_err = 0.0;
+    Matrix6 L;
+    for (int n = 0; n < 50; ++n) {
+        const Eigen::VectorXd q = n == 0 ? Eigen::VectorXd::Zero(n_) : random_q();
+        ASSERT_TRUE(rbd_.calculate_task_space_inertia(q, tcp_name_, L)) << rbd_.last_error();
+
+        const Eigen::MatrixXd M_pin = crba_full(q);
+        Jacobian J_pin = Jacobian::Zero(6, n_);
+        pinocchio::computeFrameJacobian(model_, data_, q, tcp_id, pinocchio::LOCAL_WORLD_ALIGNED, J_pin);
+        const Matrix6 L_inv_pin = J_pin * M_pin.inverse() * J_pin.transpose() + lambda * lambda * Matrix6::Identity();
+        const Matrix6 L_pin = L_inv_pin.inverse();
+
+        // Λ reaches 1/λ² near singularities: relative error
+        const double rel_err = (L - L_pin).norm() / L_pin.norm();
+        EXPECT_LT(rel_err, 1e-9) << "ours\n" << L << "\npin\n" << L_pin;
+        max_rel_err = std::max(max_rel_err, rel_err);
+    }
+    std::printf("task space inertia: max |L - L_pin| / |L_pin| = %.3g\n", max_rel_err);
 }
 
 TEST_P(RneaVsPinocchio, FullDynamicsForRandomStates)

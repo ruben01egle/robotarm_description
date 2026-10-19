@@ -299,20 +299,48 @@ robotarm_rbd::RobotarmRbd::Config inverse_config(robotarm_rbd::RobotarmRbd::Jinv
 
 TEST(JacobianInverse, TheDispatcherRunsTheConfiguredMethod)
 {
+    // both methods against their closed forms, and convert_cartesian_deltas_to_joint_deltas() must
+    // use the same configured method
     using Method = robotarm_rbd::RobotarmRbd::JinvMethod;
     const Eigen::VectorXd q = Eigen::Vector2d(0.3, -0.4);
-    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji, Ji_direct;
+    const double lambda = inverse_config(Method::LDLT).lambda;
+    Eigen::Matrix<double, 6, 1> dx;
+    dx << 0.01, -0.02, 0.005, 0.1, 0.0, -0.05;
+    Eigen::Matrix<double, Eigen::Dynamic, 6> Ji_ldlt, Ji_svd;
     for (const Method method : {Method::LDLT, Method::SVD}) {
+        SCOPED_TRACE(method == Method::LDLT ? "ldlt" : "svd");
         robotarm_rbd::RobotarmRbd rbd;
         ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(method))) << rbd.last_error();
+        Eigen::Matrix<double, 6, Eigen::Dynamic> J;
+        ASSERT_TRUE(rbd.calculate_jacobian(q, "tcp", J)) << rbd.last_error();
+        Eigen::Matrix<double, Eigen::Dynamic, 6> & Ji = method == Method::LDLT ? Ji_ldlt : Ji_svd;
         ASSERT_TRUE(rbd.calculate_jacobian_inverse(q, "tcp", Ji)) << rbd.last_error();
+
+        Eigen::MatrixXd expected;
         if (method == Method::LDLT) {
-            ASSERT_TRUE(rbd.calculate_jinv_ldlt(q, "tcp", Ji_direct));
+            // J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ
+            const Eigen::MatrixXd JtJ = J.transpose() * J + lambda * lambda * Eigen::MatrixXd::Identity(2, 2);
+            expected = JtJ.inverse() * J.transpose();
         } else {
-            ASSERT_TRUE(rbd.calculate_jinv_svd(q, "tcp", Ji_direct));
+            // J⁺ = V diag(σᵢ / (σᵢ² + λᵢ²)) Uᵀ, λᵢ² = (1 − (σᵢ/ε)²) λ² below ε = √2 λ
+            const Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+            const double eps = std::sqrt(2.0) * lambda;
+            Eigen::VectorXd gain(svd.singularValues().size());
+            for (Eigen::Index i = 0; i < gain.size(); ++i) {
+                const double s = svd.singularValues()(i);
+                const double l2 = s < eps ? (1 - (s / eps) * (s / eps)) * lambda * lambda : 0.0;
+                gain(i) = s / (s * s + l2);
+            }
+            expected = svd.matrixV() * gain.asDiagonal() * svd.matrixU().transpose();
         }
-        EXPECT_TRUE(Ji == Ji_direct);
+        EXPECT_LT((Ji - expected).cwiseAbs().maxCoeff(), 1e-12) << "ours\n" << Ji << "\nexpected\n" << expected;
+
+        Eigen::VectorXd dq(2);
+        ASSERT_TRUE(rbd.convert_cartesian_deltas_to_joint_deltas(q, dx, "tcp", dq)) << rbd.last_error();
+        EXPECT_LT((dq - Ji * dx).cwiseAbs().maxCoeff(), 1e-15);
     }
+    // the damping differs, so the dispatcher really switched
+    EXPECT_GT((Ji_ldlt - Ji_svd).cwiseAbs().maxCoeff(), 1e-9);
 }
 
 TEST(JacobianInverse, SingularityInfoHoldsTheSingularValuesAndDirectionsOfTheJacobian)
@@ -326,7 +354,7 @@ TEST(JacobianInverse, SingularityInfoHoldsTheSingularValuesAndDirectionsOfTheJac
     ASSERT_TRUE(rbd.calculate_jacobian(q, "tcp", J));
 
     robotarm_rbd::RobotarmRbd::SingularityInfo info(2);
-    ASSERT_TRUE(rbd.calculate_jinv_svd(q, "tcp", Ji, &info)) << rbd.last_error();
+    ASSERT_TRUE(rbd.calculate_jacobian_inverse(q, "tcp", Ji, &info)) << rbd.last_error();
     ASSERT_EQ(info.singular_values.size(), 2);
     ASSERT_EQ(info.U.rows(), 6);
     ASSERT_EQ(info.U.cols(), 2);
@@ -348,7 +376,7 @@ TEST(JacobianInverse, SingularityInfoIsResizedWhenNotPresized)
     ASSERT_TRUE(rbd.initialize(two_joint_urdf(), inverse_config(robotarm_rbd::RobotarmRbd::JinvMethod::SVD)));
     Eigen::Matrix<double, Eigen::Dynamic, 6> Ji;
     robotarm_rbd::RobotarmRbd::SingularityInfo info;
-    ASSERT_TRUE(rbd.calculate_jinv_svd(Eigen::Vector2d(0.3, -0.4), "tcp", Ji, &info));
+    ASSERT_TRUE(rbd.calculate_jacobian_inverse(Eigen::Vector2d(0.3, -0.4), "tcp", Ji, &info));
     EXPECT_EQ(info.singular_values.size(), 2);
     EXPECT_EQ(info.U.cols(), 2);
 }
@@ -372,7 +400,7 @@ TEST(JacobianInverse, AFailedSvdInverseLeavesOutputAndInfoUntouched)
     robotarm_rbd::RobotarmRbd::SingularityInfo info(2);
     info.singular_values.setConstant(42.0);
     info.U.setConstant(42.0);
-    EXPECT_FALSE(rbd.calculate_jinv_svd(Eigen::Vector2d(0.3, -0.4), "no_such_link", Ji, &info));
+    EXPECT_FALSE(rbd.calculate_jacobian_inverse(Eigen::Vector2d(0.3, -0.4), "no_such_link", Ji, &info));
     EXPECT_TRUE((Ji.array() == 42.0).all());
     EXPECT_TRUE((info.singular_values.array() == 42.0).all());
     EXPECT_TRUE((info.U.array() == 42.0).all());
@@ -880,4 +908,106 @@ TEST(MassMatrix, FailuresLeaveTheOutputUntouched)
     EXPECT_STREQ(kinematics_only.last_error(), "Not all links have a valid inertia");
 
     EXPECT_EQ(M, untouched);
+}
+
+// ---------------------------------------------------------------------------------------------
+// task space inertia (against Pinocchio on the real robot in rnea_pinocchio_test.cpp)
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+
+using Matrix6 = Eigen::Matrix<double, 6, 6>;
+
+robotarm_rbd::RobotarmRbd::Config lambda_config(double lambda)
+{
+    robotarm_rbd::RobotarmRbd::Config config;
+    config.lambda = lambda;
+    return config;
+}
+
+// Λ exactly symmetric, positive definite, and the inverse of J M⁻¹ Jᵀ + λ²I built from the public
+// jacobian and mass matrix
+void expect_task_space_inertia_properties(
+    robotarm_rbd::RobotarmRbd & rbd, const Eigen::VectorXd & q, double lambda)
+{
+    const Eigen::Index n = q.size();
+    Matrix6 L;
+    ASSERT_TRUE(rbd.calculate_task_space_inertia(q, "tcp", L)) << rbd.last_error();
+    EXPECT_EQ((L - L.transpose()).cwiseAbs().maxCoeff(), 0.0) << "symmetrised, so exactly symmetric\n" << L;
+    const Eigen::SelfAdjointEigenSolver<Matrix6> eig(L);
+    EXPECT_GT(eig.eigenvalues().minCoeff(), 0.0) << "positive definite\n" << L;
+
+    Eigen::Matrix<double, 6, Eigen::Dynamic> J;
+    Eigen::MatrixXd M(n, n);
+    ASSERT_TRUE(rbd.calculate_jacobian(q, "tcp", J)) << rbd.last_error();
+    ASSERT_TRUE(rbd.calculate_mass_matrix(q, M)) << rbd.last_error();
+    const Matrix6 L_inv = J * M.inverse() * J.transpose() + lambda * lambda * Matrix6::Identity();
+    EXPECT_LT((L_inv * L - Matrix6::Identity()).cwiseAbs().maxCoeff(), 1e-9) << "Λ⁻¹ Λ\n" << L_inv * L;
+}
+
+}  // namespace
+
+TEST(TaskSpaceInertia, IsSymmetricPositiveDefiniteAndInvertsJMinvJt)
+{
+    // fewer than 6 joints (Λ⁻¹ only regularised by λ²I), exactly 6, and redundant chains
+    for (const size_t dof : {2u, 6u, 7u, 9u}) {
+        SCOPED_TRACE("dof " + std::to_string(dof));
+        robotarm_rbd::RobotarmRbd rbd;
+        ASSERT_TRUE(rbd.initialize(inertial_chain_urdf(dof), lambda_config(0.01))) << rbd.last_error();
+        const auto n = static_cast<Eigen::Index>(dof);
+        expect_task_space_inertia_properties(rbd, Eigen::VectorXd::LinSpaced(n, -1.0, 1.0), 0.01);
+        expect_task_space_inertia_properties(rbd, Eigen::VectorXd::LinSpaced(n, 0.5, -0.3), 0.01);
+    }
+}
+
+TEST(TaskSpaceInertia, SixJointsAwayFromSingularitiesIsJinvTransposedMJinv)
+{
+    // square, regular J and a tiny λ: the textbook Λ = J⁻ᵀ M J⁻¹
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(inertial_chain_urdf(6), lambda_config(1e-6))) << rbd.last_error();
+    const Eigen::VectorXd q = Eigen::VectorXd::LinSpaced(6, -1.0, 1.0);
+
+    Eigen::Matrix<double, 6, Eigen::Dynamic> J;
+    Eigen::MatrixXd M(6, 6);
+    ASSERT_TRUE(rbd.calculate_jacobian(q, "tcp", J));
+    ASSERT_TRUE(rbd.calculate_mass_matrix(q, M));
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(J);
+    ASSERT_GT(svd.singularValues().minCoeff(), 1e-2) << "test premise: q is away from singularities";
+
+    const Matrix6 J_inv = Matrix6(J).inverse();
+    const Matrix6 expected = J_inv.transpose() * M * J_inv;
+    Matrix6 L;
+    ASSERT_TRUE(rbd.calculate_task_space_inertia(q, "tcp", L)) << rbd.last_error();
+    EXPECT_TRUE(L.isApprox(expected, 1e-8)) << "ours\n" << L << "\nexpected\n" << expected;
+}
+
+TEST(TaskSpaceInertia, FailuresLeaveTheOutputUntouched)
+{
+    Matrix6 L = Matrix6::Constant(42.0);
+    const Eigen::VectorXd q = Eigen::Vector2d(0.4, -0.3);
+
+    robotarm_rbd::RobotarmRbd rbd;
+    EXPECT_FALSE(rbd.calculate_task_space_inertia(q, "tcp", L));
+    EXPECT_STREQ(rbd.last_error(), "Not initialised");
+
+    ASSERT_TRUE(rbd.initialize(two_joint_urdf(), {})) << rbd.last_error();
+    EXPECT_FALSE(rbd.calculate_task_space_inertia(Eigen::Vector3d::Zero(), "tcp", L));
+    EXPECT_STREQ(rbd.last_error(), "Unexpected q dimension");
+    EXPECT_FALSE(rbd.calculate_task_space_inertia(q, "no_such_link", L));
+    EXPECT_NE(std::string(rbd.last_error()).find("no_such_link"), std::string::npos) << rbd.last_error();
+
+    // J = 0 for the base link
+    std::string base;
+    ASSERT_TRUE(rbd.get_base_link_name(base));
+    EXPECT_FALSE(rbd.calculate_task_space_inertia(q, base, L));
+    EXPECT_NE(std::string(rbd.last_error()).find("base link"), std::string::npos) << rbd.last_error();
+
+    // without inertias there is no mass matrix
+    robotarm_rbd::RobotarmRbd kinematics_only;
+    ASSERT_TRUE(kinematics_only.initialize(two_joint_urdf("0 1 0", "", ""), {})) << kinematics_only.last_error();
+    EXPECT_FALSE(kinematics_only.calculate_task_space_inertia(q, "tcp", L));
+    EXPECT_STREQ(kinematics_only.last_error(), "Not all links have a valid inertia");
+
+    EXPECT_TRUE((L.array() == 42.0).all());
 }

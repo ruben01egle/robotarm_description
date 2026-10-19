@@ -6,6 +6,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# tests are off by default, so a workspace that only uses the library (e.g. as a submodule) skips
+# their long compile and the Pinocchio test dependency. Enable with -DROBOTARM_RBD_BUILD_TESTS=ON
+# (this repo's colcon.meta does), BUILD_TESTING=OFF still disables them.
+option(ROBOTARM_RBD_BUILD_TESTS "Build the tests of robotarm_rbd (needs Pinocchio)" OFF)
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -126,7 +131,7 @@ ament_export_dependencies(
   Eigen3
 )
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND ROBOTARM_RBD_BUILD_TESTS)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

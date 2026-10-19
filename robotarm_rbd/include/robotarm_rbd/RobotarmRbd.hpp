@@ -38,12 +38,18 @@ public:
         bool valid = false;
     };
 
-    enum class JinvMethod { LDLT, SVD };
+    enum class JinvMethod {
+        LDLT,  // damped least squares with constant damping λ: fast, but damps all directions equally
+        SVD    // selective, adaptive damping per singular direction: slower, but accurate
+    };
 
     struct Config {
-        // damping factor of the damped least squares in calculate_jacobian_inverse(), >= 0
+        // damping factor λ, finite and > 0, used twice (different units, one value for now):
+        //  - damped least squares of calculate_jacobian_inverse() and convert_cartesian_deltas_to_joint_deltas()
+        //  - regularisation λ²I of Λ⁻¹ in calculate_task_space_inertia(), which keeps Λ finite at
+        //    singularities and for chains with fewer than 6 joints (caps it at about 1/λ²)
         double lambda = 0.01;
-        // default method for jinv
+        // method of calculate_jacobian_inverse() and convert_cartesian_deltas_to_joint_deltas()
         JinvMethod jinv_method = JinvMethod::SVD;
     };
 
@@ -124,21 +130,9 @@ public:
         const Eigen::VectorXd &q,
         const std::string &link_name,
         Eigen::Matrix<double, 6, Eigen::Dynamic> &jacobian);
-    
-    // Damped least squares w. constant damping λ, fast, but damps all directions equally 
-    bool calculate_jinv_ldlt(
-        const Eigen::VectorXd &q,
-        const std::string &link_name,
-        Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse);
 
-    // Selective, adaptive damped least squares, slower, but accurate
-    // Optionally returns singular values and directions
-    bool calculate_jinv_svd(
-        const Eigen::VectorXd &q,
-        const std::string &link_name,
-        Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
-        SingularityInfo *info = nullptr);
-
+    // damped pseudoinverse J⁺ with Config::jinv_method. info (singular values and directions of J)
+    // is only available with JinvMethod::SVD, with LDLT passing it fails.
     bool calculate_jacobian_inverse(
         const Eigen::VectorXd &q,
         const std::string &link_name,
@@ -160,6 +154,14 @@ public:
         const Eigen::Vector3d& gravity = Eigen::Vector3d(0.0, 0.0, -9.81));
 
     bool calculate_mass_matrix(const Eigen::VectorXd &q, Eigen::MatrixXd &mass_matrix);
+
+    // Task space inertia of link_name (base frame axes, reference point at the link origin, linear
+    // rows first like the jacobian): Λ = (J M⁻¹ Jᵀ + λ²I)⁻¹ with λ = Config::lambda, exactly symmetric.
+    // Fails on a kinematics only model and for the base link (J = 0).
+    bool calculate_task_space_inertia(
+        const Eigen::VectorXd &q,
+        const std::string &link_name,
+        Eigen::Matrix<double, 6, 6> &task_space_inertia);
 
     bool initialised() const { return initialised_; }
 
@@ -183,6 +185,24 @@ public:
     const char * last_error() const { return error_; }
 
 private:
+    // Internal helpers for computation: store results in scratch member to be reused, no input checks
+    bool compute_jacobian(
+        const Eigen::VectorXd &q,
+        const std::string &link_name);
+
+    // JinvMethod::LDLT, see there
+    bool compute_jinv_ldlt(
+        const Eigen::VectorXd &q,
+        const std::string &link_name);
+
+    // JinvMethod::SVD, see there. Writes info (if given) directly, not into tmp_
+    bool compute_jinv_svd(
+        const Eigen::VectorXd &q,
+        const std::string &link_name,
+        SingularityInfo *info = nullptr);
+
+    bool compute_mass_matrix(const Eigen::VectorXd &q);
+
     static Eigen::Isometry3d joint_origin_to_isometry(urdf::JointConstSharedPtr joint);
     bool check_input(const Eigen::VectorXd &input, const char *name);
     // printf-style: writes the message into error_ (truncated to its size) and returns false
@@ -194,10 +214,10 @@ protected:
     TCP tcp_;
 
 private:
-    // scratch buffers for the kinematics and dynamics functions: results are built here and only
-    // copied to the caller's output once complete, so a failure leaves the output untouched
-    // (all or nothing). Nothing in here outlives a call. Sized once in initialize() via resize(),
-    // so the rt path itself does not allocate: every new buffer must be sized in resize().
+    // Scratch buffers, nothing in here outlives a public call. The compute_*() helpers write their
+    // result here (j: compute_jacobian, j_inv: compute_jinv_*, mass_matrix: compute_mass_matrix),
+    // valid until that helper runs again; the public functions copy it out only on success (all or
+    // nothing). Sized once in resize(), so the rt path does not allocate: size every new buffer there.
     struct Scratch {
         // recursive newton euler, per joint
         std::vector<Eigen::Isometry3d> T;
@@ -208,10 +228,8 @@ private:
         std::vector<Eigen::Vector3d> F;
         std::vector<Eigen::Vector3d> M;
         // jacobian and its inverse
-        Eigen::Matrix<double, 6, Eigen::Dynamic> j_cj;
-        Eigen::Matrix<double, 6, Eigen::Dynamic> j_cji;
-        Eigen::Matrix<double, 6, Eigen::Dynamic> j_jd2cd;
-        Eigen::Matrix<double, Eigen::Dynamic, 6> j_inv_cd2jd;
+        Eigen::Matrix<double, 6, Eigen::Dynamic> j;
+        Eigen::Matrix<double, Eigen::Dynamic, 6> j_inv;
         Eigen::MatrixXd jtj_damped; // JᵀJ + λ²I of the damped least squares
         Eigen::VectorXd sdinv;      // diagonal entries of Σ D⁻¹ for svd
         Eigen::MatrixXd sdinv_ut;   // tmp matrix for (Σ D⁻¹) Uᵀ to avoid allocations in triple matrix product
@@ -223,6 +241,9 @@ private:
         Eigen::VectorXd mass_matrix_col;
         Eigen::VectorXd dq_zero;
         Eigen::VectorXd ddq_unit;
+        // task space inertia
+        Eigen::LLT<Eigen::MatrixXd> llt;
+        Eigen::Matrix<double, Eigen::Dynamic, 6> minv_jt;
 
         void resize(Eigen::Index n) {
             const Eigen::Index r = std::min<Eigen::Index>(6, n);
@@ -234,10 +255,8 @@ private:
             a_com.resize(size);
             F.resize(size);
             M.resize(size);
-            j_cj = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
-            j_cji = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
-            j_jd2cd = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
-            j_inv_cd2jd = Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(n, 6);
+            j = Eigen::Matrix<double, 6, Eigen::Dynamic>::Zero(6, n);
+            j_inv = Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(n, 6);
             jtj_damped = Eigen::MatrixXd::Zero(n, n);
             ldlt = Eigen::LDLT<Eigen::MatrixXd>(n);
             sdinv = Eigen::VectorXd::Zero(r);
@@ -250,6 +269,8 @@ private:
             mass_matrix_col = Eigen::VectorXd::Zero(n);
             dq_zero = Eigen::VectorXd::Zero(n);
             ddq_unit = Eigen::VectorXd::Zero(n);
+            llt = Eigen::LLT<Eigen::MatrixXd>(n);
+            minv_jt = Eigen::Matrix<double, Eigen::Dynamic, 6>::Zero(n, 6);
         }
     };
 

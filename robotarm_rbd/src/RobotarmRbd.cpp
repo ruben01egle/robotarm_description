@@ -257,13 +257,24 @@ bool robotarm_rbd::RobotarmRbd::convert_cartesian_deltas_to_joint_deltas(
 	const std::string &link_name,
 	Eigen::VectorXd &delta_q)
 {
+	if (!check_input(q, "q")) return false;
 	if (!delta_x.allFinite()) {
 		return fail("delta_x contains NaN or inf");
 	}
 
+    switch (config_.jinv_method) {
+    case JinvMethod::LDLT:
+        if (!compute_jinv_ldlt(q, link_name)) return false;
+		break;
+    case JinvMethod::SVD:
+        if (!compute_jinv_svd(q, link_name)) return false;
+		break;
+	default:
+		return fail("Unknown jinv_method");
+    }
 	// delta_q = J⁺ delta_x
-	if (!calculate_jacobian_inverse(q, link_name, tmp_.j_inv_cd2jd)) return false;
-	delta_q.noalias() = tmp_.j_inv_cd2jd * delta_x;
+	delta_q.noalias() = tmp_.j_inv * delta_x;
+
     return true;
 }
 
@@ -273,6 +284,7 @@ bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
 	const std::string &link_name,
 	Eigen::Matrix<double, 6, 1> &delta_x)
 {
+	if (!check_input(q, "q")) return false;
 	if (delta_q.size() != static_cast<Eigen::Index>(joints_.size())) {
 		return fail("Unexpected delta_q dimension");
 	}
@@ -281,8 +293,8 @@ bool robotarm_rbd::RobotarmRbd::convert_joint_deltas_to_cartesian_deltas(
 	}
 
 	// delta_x = J delta_q
-	if (!calculate_jacobian(q, link_name, tmp_.j_jd2cd)) return false;
-	delta_x.noalias() = tmp_.j_jd2cd * delta_q;
+	if (!compute_jacobian(q, link_name)) return false;
+	delta_x.noalias() = tmp_.j * delta_q;
     return true;
 }
 
@@ -328,94 +340,8 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian(
 {
     if (!check_input(q, "q")) return false;
 
-	if (link_name == joints_.front().parent_link_name_) {
-		jacobian.setZero(6, joints_.size());
-		return true;
-	}
-
-	tmp_.j_cj.setZero();
-	Eigen::Isometry3d T_end;
-	if (!calculate_link_transform(q, link_name, T_end)) return false;
-	Eigen::Vector3d p_end = T_end.translation();
-
-	Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
-	for (size_t i = 0; i < joints_.size(); ++i) {
-
-		T = T * joints_[i].transform(q[i]);
-		Eigen::Vector3d joint_axis = T.linear() * joints_[i].joint_axis_in_child_;
-		Eigen::Vector3d p_i = T.translation();
-
-		tmp_.j_cj.block<3,1>(0, i) = joint_axis.cross(p_end - p_i);
-    	tmp_.j_cj.block<3,1>(3, i) = joint_axis;
-
-		if (joints_[i].child_link_name_ == link_name) {
-			break;
-		}
-	}
-
-	jacobian = tmp_.j_cj;
-    return true;
-}
-
-bool robotarm_rbd::RobotarmRbd::calculate_jinv_ldlt(
-	const Eigen::VectorXd &q,
-	const std::string &link_name,
-	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse)
-{
-    // q is validated by calculate_jacobian(), which is the first thing called here
-	if (!calculate_jacobian(q, link_name, tmp_.j_cji)) return false;
-
-	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
-	// J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ -> (JᵀJ + λ²I)J⁺ = Jᵀ as MX = Jᵀ with:
-	// M = (JᵀJ + λ²I) (called tmp_.jtj_damped)
-	// X = J⁺
-	tmp_.jtj_damped.noalias() = tmp_.j_cji.transpose() * tmp_.j_cji;
-	tmp_.jtj_damped.diagonal().array() += config_.lambda * config_.lambda;
-
-	// factor M once, and check that it worked
-	tmp_.ldlt.compute(tmp_.jtj_damped);
-	if (tmp_.ldlt.info() != Eigen::Success) {
-		return fail("Factorization failed");
-	}
-	jacobian_inverse = tmp_.ldlt.solve(tmp_.j_cji.transpose());
-
-    return true;
-}
-
-bool robotarm_rbd::RobotarmRbd::calculate_jinv_svd(
-	const Eigen::VectorXd &q,
-	const std::string &link_name,
-	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
-	SingularityInfo *info)
-{
-	// q is validated by calculate_jacobian(), which is the first thing called here
-	if (!calculate_jacobian(q, link_name, tmp_.j_cji)) return false;
-
-	tmp_.j_svd = tmp_.j_cji;
-	tmp_.svd.compute(tmp_.j_svd);
-	const auto& S = tmp_.svd.singularValues();
-	const Eigen::Index r = S.size();
-	double eps = std::sqrt(2) * config_.lambda;
-
-	// selective, adaptive damping, each singular direction i gets its own λᵢ:
-	//   λᵢ² = 0                          for σᵢ ≥ ε
-	//   λᵢ² = (1 − (σᵢ/ε)²) · λ²         for σᵢ < ε
-	// gain of direction i in J⁺: σᵢ / (σᵢ² + λᵢ²) -> Σ D⁻¹
-	for (Eigen::Index i=0; i<r; ++i) {
-		double lamdba_i_sq = 0;
-		if (S(i) < eps) {
-			lamdba_i_sq = (1 - (S(i)/eps)*(S(i)/eps)) * config_.lambda*config_.lambda;
-		}
-		tmp_.sdinv(i) = S(i) / (S(i)*S(i) + lamdba_i_sq);
-	}
-	// J⁺ = V Σ D⁻¹ Uᵀ
-	tmp_.sdinv_ut.noalias() = tmp_.sdinv.asDiagonal() * tmp_.svd.matrixU().transpose();
-	jacobian_inverse.noalias() = tmp_.svd.matrixV() * tmp_.sdinv_ut;
-
-	if (info != nullptr) {
-		info->singular_values = S;
-		info->U = tmp_.svd.matrixU();
-	}
+	if(!compute_jacobian(q, link_name)) return false;
+	jacobian = tmp_.j;
 
     return true;
 }
@@ -426,14 +352,22 @@ bool robotarm_rbd::RobotarmRbd::calculate_jacobian_inverse(
 	Eigen::Matrix<double, Eigen::Dynamic, 6> &jacobian_inverse,
 	SingularityInfo *info)
 {
+	if (!check_input(q, "q")) return false;
+
     switch (config_.jinv_method) {
     case JinvMethod::LDLT:
         if (info != nullptr) return fail("SingularityInfo requires jinv_method = SVD");
-        return calculate_jinv_ldlt(q, link_name, jacobian_inverse);
+        if (!compute_jinv_ldlt(q, link_name)) return false;
+		break;
     case JinvMethod::SVD:
-        return calculate_jinv_svd(q, link_name, jacobian_inverse, info);
+        if (!compute_jinv_svd(q, link_name, info)) return false;
+		break;
+	default:
+		return fail("Unknown jinv_method");
     }
-    return fail("Unknown jinv_method");
+	jacobian_inverse = tmp_.j_inv;
+
+    return true;
 }
 
 bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
@@ -510,7 +444,141 @@ bool robotarm_rbd::RobotarmRbd::recursive_newton_euler(
 bool robotarm_rbd::RobotarmRbd::calculate_mass_matrix(const Eigen::VectorXd &q, Eigen::MatrixXd &mass_matrix)
 {
 	if (!check_input(q, "q")) return false;
-	const auto n = static_cast<Eigen::Index>(joints_.size());
+	
+	if (!compute_mass_matrix(q)) return false;
+	mass_matrix = tmp_.mass_matrix;
+
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::calculate_task_space_inertia(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	Eigen::Matrix<double, 6, 6> &task_space_inertia)
+{
+	if (!check_input(q, "q")) return false;
+	// J = 0 for the base link: Λ⁻¹ would be λ²I alone and Λ = I/λ², a number without meaning
+	if (link_name == joints_.front().parent_link_name_) {
+		return fail("Task space inertia of the base link %s is undefined", link_name.c_str());
+	}
+
+	if (!compute_jacobian(q, link_name)) return false;
+	if (!compute_mass_matrix(q)) return false;
+
+	tmp_.llt.compute(tmp_.mass_matrix);          		// M = L Lᵀ, n×n
+	if (tmp_.llt.info() != Eigen::Success) {
+		return fail("Mass matrix is not positive definite");
+	}
+	tmp_.minv_jt = tmp_.llt.solve(tmp_.j.transpose());  // X = M⁻¹ Jᵀ, n×6, no explicit M⁻¹
+
+	Eigen::Matrix<double, 6, 6> j_minv_jt_damped;
+	j_minv_jt_damped.noalias() = tmp_.j * tmp_.minv_jt;		// Λ⁻¹ = J M⁻¹ Jᵀ + λ²I
+	j_minv_jt_damped.diagonal().array() += config_.lambda * config_.lambda;
+
+	// Λ = (Λ⁻¹)⁻¹, SPD thanks to the damping (λ > 0 is checked in initialize()): Cholesky again,
+	// fixed size so on the stack. Can only fail numerically.
+	const Eigen::LLT<Eigen::Matrix<double, 6, 6>> llt_lambda(j_minv_jt_damped);
+	if (llt_lambda.info() != Eigen::Success) {
+		return fail("Inverse task space inertia is not positive definite");
+	}
+	const Eigen::Matrix<double, 6, 6> lambda = llt_lambda.solve(Eigen::Matrix<double, 6, 6>::Identity());
+	task_space_inertia = 0.5 * (lambda + lambda.transpose());	// exactly symmetric, different source, no aliasing
+    
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::compute_jacobian(const Eigen::VectorXd &q, const std::string &link_name)
+{
+	if (link_name == joints_.front().parent_link_name_) {
+		tmp_.j.setZero(6, joints_.size());
+		return true;
+	}
+
+	tmp_.j.setZero();
+	Eigen::Isometry3d T_end;
+	if (!calculate_link_transform(q, link_name, T_end)) return false;
+	Eigen::Vector3d p_end = T_end.translation();
+
+	Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
+	for (size_t i = 0; i < joints_.size(); ++i) {
+
+		T = T * joints_[i].transform(q[i]);
+		Eigen::Vector3d joint_axis = T.linear() * joints_[i].joint_axis_in_child_;
+		Eigen::Vector3d p_i = T.translation();
+
+		tmp_.j.block<3,1>(0, i) = joint_axis.cross(p_end - p_i);
+    	tmp_.j.block<3,1>(3, i) = joint_axis;
+
+		if (joints_[i].child_link_name_ == link_name) {
+			break;
+		}
+	}
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::compute_jinv_ldlt(
+	const Eigen::VectorXd &q,
+	const std::string &link_name)
+{
+	if (!compute_jacobian(q, link_name)) return false;
+
+	// calculate J⁻¹ as pseudo-inverse with damped least squares: f(q̇) = ‖J q̇ − ẋ‖² + λ²‖q̇‖²
+	// J⁺ = (JᵀJ + λ²I)⁻¹ Jᵀ -> (JᵀJ + λ²I)J⁺ = Jᵀ as MX = Jᵀ with:
+	// M = (JᵀJ + λ²I) (called tmp_.jtj_damped)
+	// X = J⁺
+	tmp_.jtj_damped.noalias() = tmp_.j.transpose() * tmp_.j;
+	tmp_.jtj_damped.diagonal().array() += config_.lambda * config_.lambda;
+
+	// factor M once, and check that it worked
+	tmp_.ldlt.compute(tmp_.jtj_damped);
+	if (tmp_.ldlt.info() != Eigen::Success) {
+		return fail("Factorization failed");
+	}
+	tmp_.j_inv = tmp_.ldlt.solve(tmp_.j.transpose());
+
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::compute_jinv_svd(
+	const Eigen::VectorXd &q,
+	const std::string &link_name,
+	SingularityInfo *info)
+{
+	if (!compute_jacobian(q, link_name)) return false;
+
+	tmp_.j_svd = tmp_.j;
+	tmp_.svd.compute(tmp_.j_svd);
+	const auto& S = tmp_.svd.singularValues();
+	const Eigen::Index r = S.size();
+	double eps = std::sqrt(2) * config_.lambda;
+
+	// selective, adaptive damping, each singular direction i gets its own λᵢ:
+	//   λᵢ² = 0                          for σᵢ ≥ ε
+	//   λᵢ² = (1 − (σᵢ/ε)²) · λ²         for σᵢ < ε
+	// gain of direction i in J⁺: σᵢ / (σᵢ² + λᵢ²) -> Σ D⁻¹
+	for (Eigen::Index i=0; i<r; ++i) {
+		double lambda_i_sq = 0;
+		if (S(i) < eps) {
+			lambda_i_sq = (1 - (S(i)/eps)*(S(i)/eps)) * config_.lambda*config_.lambda;
+		}
+		tmp_.sdinv(i) = S(i) / (S(i)*S(i) + lambda_i_sq);
+	}
+	// J⁺ = V Σ D⁻¹ Uᵀ
+	tmp_.sdinv_ut.noalias() = tmp_.sdinv.asDiagonal() * tmp_.svd.matrixU().transpose();
+	tmp_.j_inv.noalias() = tmp_.svd.matrixV() * tmp_.sdinv_ut;
+
+	// the one compute_*() output outside tmp_: written last, after everything that can fail
+	if (info != nullptr) {
+		info->singular_values = S;
+		info->U = tmp_.svd.matrixU();
+	}
+
+    return true;
+}
+
+bool robotarm_rbd::RobotarmRbd::compute_mass_matrix(const Eigen::VectorXd &q)
+{
+    const auto n = static_cast<Eigen::Index>(joints_.size());
 
 	for (Eigen::Index i=0; i<n; ++i) {
 		tmp_.ddq_unit.setZero();
@@ -533,9 +601,7 @@ bool robotarm_rbd::RobotarmRbd::calculate_mass_matrix(const Eigen::VectorXd &q, 
 			tmp_.mass_matrix(c, r) = avg;
 		}
 	}
-
-	mass_matrix = tmp_.mass_matrix;
-    return true;
+	return true;
 }
 
 Eigen::Isometry3d robotarm_rbd::RobotarmRbd::joint_origin_to_isometry(urdf::JointConstSharedPtr joint)

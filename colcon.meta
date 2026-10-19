@@ -2,7 +2,8 @@
     "names": {
         "robotarm_rbd": {
             "cmake-args": [
-                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+                "-DROBOTARM_RBD_BUILD_TESTS=ON"
             ]
         }
     }

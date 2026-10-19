@@ -140,14 +140,14 @@ TEST(MallocTestRbd, PresizedSingularityInfoDoesNotAllocate)
         for (int k = 0; k < 10; ++k) {
             const Eigen::VectorXd q = ref.random_q(rng);
             bool ok = false;
-            EXPECT_FALSE(allocates([&] {ok = rbd.calculate_jinv_svd(q, tcp, Ji, &info);}));
+            EXPECT_FALSE(allocates([&] {ok = rbd.calculate_jacobian_inverse(q, tcp, Ji, &info);}));
             EXPECT_TRUE(ok) << rbd.last_error();
         }
 
         // negative control: an unsized SingularityInfo has to be allocated
         robotarm_rbd::RobotarmRbd::SingularityInfo info_unsized;
         const Eigen::VectorXd q = ref.random_q(rng);
-        EXPECT_TRUE(allocates([&] {rbd.calculate_jinv_svd(q, tcp, Ji, &info_unsized);}));
+        EXPECT_TRUE(allocates([&] {rbd.calculate_jacobian_inverse(q, tcp, Ji, &info_unsized);}));
     }
 }
 
@@ -220,6 +220,25 @@ TEST(MallocTestRnea, PresizedMassMatrixDoesNotAllocate)
     const Eigen::VectorXd zero = Eigen::VectorXd::Zero(6);
     Eigen::MatrixXd M_unsized;
     EXPECT_TRUE(allocates([&] {rbd.calculate_mass_matrix(zero, M_unsized);}));
+}
+
+TEST(MallocTestRnea, TaskSpaceInertiaDoesNotAllocate)
+{
+    // the output is fixed size, so there is no unsized negative control: the guard itself is
+    // checked by the other negative controls in this file
+    robotarm_rbd::RobotarmRbd rbd;
+    ASSERT_TRUE(rbd.initialize(test_utils::real_urdf(), {})) << rbd.last_error();
+    std::string tcp;
+    ASSERT_TRUE(rbd.get_tcp_link_name(tcp));
+    std::mt19937 rng(4711);
+    Eigen::Matrix<double, 6, 6> L;
+
+    for (int n = 0; n < 30; ++n) {
+        const Eigen::VectorXd q = test_utils::random_vector(rng, 6, 1.0);
+        bool ok = false;
+        EXPECT_FALSE(allocates([&] {ok = rbd.calculate_task_space_inertia(q, tcp, L);}));
+        EXPECT_TRUE(ok) << rbd.last_error();
+    }
 }
 
 TEST_F(MallocTest, ATemporaryFromAPlainProductAssignmentIsCaught)
