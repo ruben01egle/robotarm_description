@@ -791,7 +791,7 @@
             <child link="stage1"/>
             <axis xyz="0 0 1"/>
             <limit effort="8" velocity="3.14" lower="-3.0543262" upper="3.0543262"/>
-            <armature value="0"/>
+            <armature value="0.00648"/>
         </joint>
         <joint name="axis2" type="revolute">
             <origin xyz="0.025 0 0.35" rpy="-1.5707963 0 0"/>
@@ -799,7 +799,7 @@
             <child link="stage2"/>
             <axis xyz="0 0 1"/>
             <limit effort="35" velocity="2.5" lower="-2.7925268" upper="0.34906585"/>
-            <armature value="0"/>
+            <armature value="0.162"/>
         </joint>
         <joint name="axis3" type="revolute">
             <origin xyz="0.3 0 0.0185" rpy="0 0 0"/>
@@ -807,7 +807,7 @@
             <child link="stage3"/>
             <axis xyz="0 0 1"/>
             <limit effort="15" velocity="2.5" lower="-2.0943951" upper="2.3561945"/>
-            <armature value="0"/>
+            <armature value="0.023617"/>
         </joint>
         <joint name="axis4" type="revolute">
             <origin xyz="0 -0.015 0" rpy="-1.5707963 0 -1.5707963"/>
@@ -815,7 +815,7 @@
             <child link="stage4"/>
             <axis xyz="0 0 1"/>
             <limit effort="5" velocity="2.5" lower="-3.0543262" upper="3.0543262"/>
-            <armature value="0"/>
+            <armature value="0.00288"/>
         </joint>
         <joint name="axis5" type="revolute">
             <origin xyz="0 0 0.252" rpy="1.5707963 0 0"/>
@@ -823,7 +823,7 @@
             <child link="stage5"/>
             <axis xyz="0 0 1"/>
             <limit effort="4" velocity="2.5" lower="-2.0071286" upper="2.0071286"/>
-            <armature value="0"/>
+            <armature value="0.00072"/>
         </joint>
         <joint name="axis6" type="revolute">
             <origin xyz="0 0 0" rpy="-1.5707963 0 0"/>
@@ -831,7 +831,7 @@
             <child link="stage6"/>
             <axis xyz="0 0 1"/>
             <limit effort="4" velocity="2.5" lower="-3.0543262" upper="3.0543262"/>
-            <armature value="0"/>
+            <armature value="0.00072"/>
         </joint>
         <link name="flange"/>
         <joint name="flange_joint" type="fixed">
