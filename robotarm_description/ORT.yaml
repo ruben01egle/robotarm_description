@@ -25,25 +25,25 @@ names:
     axis1:
       effort: 8.0
       velocity: 3.14
-      armature: 0.0
+      armature: 0.00693
     axis2:
       effort: 35.0
       velocity: 2.5
-      armature: 0.0
+      armature: 0.178
     axis3:
       effort: 15.0
       velocity: 2.5
-      armature: 0.0
+      armature: 0.0254
     axis4:
       effort: 5.0
       velocity: 2.5
-      armature: 0.0
+      armature: 0.00299
     axis5:
       effort: 4.0
       velocity: 2.5
-      armature: 0.0
+      armature: 0.000991
     axis6:
       effort: 4.0
       velocity: 2.5
-      armature: 0.0
+      armature: 0.000991
 

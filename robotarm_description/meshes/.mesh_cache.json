@@ -1,6 +1,6 @@
 {
   "base": {
-    "key": "539a50cf8ae1c66abd08a428776efd329c232a3cbe3250ca15e7b1360ec24733",
+    "key": "58e7745cec9da0dfc5879fc0e7602c9d2cb2355377f4334f3258bfeb9239e251",
     "visual_size": 4999984,
     "collision": [
       "base_collision_0.stl",
@@ -22,7 +22,7 @@
     ]
   },
   "stage1": {
-    "key": "fcff1f37e6435c387c09940f0d2b227aa5127bf4fed1bf10d62148bec0081077",
+    "key": "4c7f4e477a256d724675849b58a5dcf42017462f5b2f27d709eca3c531540104",
     "visual_size": 5000084,
     "collision": [
       "stage1_collision_0.stl",
@@ -44,8 +44,8 @@
     ]
   },
   "stage2": {
-    "key": "b4a68b74621d55c77328a6c86929e7fe499d1ccf27571860bd46215e757b97f9",
-    "visual_size": 4999984,
+    "key": "1b5179754b50af99068b82a68901308f42d1fca909ab52ea5d53af81cd92463d",
+    "visual_size": 5000084,
     "collision": [
       "stage2_collision_0.stl",
       "stage2_collision_1.stl",
@@ -66,8 +66,8 @@
     ]
   },
   "stage4": {
-    "key": "e4c8f8daa14c66fc04790550d354b803ccf697390f5bed6d64f6a6cf500963df",
-    "visual_size": 4999984,
+    "key": "f0dc342637d5ad588c330989d187ed0183579cd21368e21938d6fd5070548d6c",
+    "visual_size": 5000084,
     "collision": [
       "stage4_collision_0.stl",
       "stage4_collision_1.stl",
@@ -88,8 +88,8 @@
     ]
   },
   "stage3": {
-    "key": "daf0bbcde8f9270a379438e7eedb1ede53ffface2aca9dfb96b11cd2c11152b4",
-    "visual_size": 5000084,
+    "key": "43eef003c57a73d4e92123f45da15e1dde9746b66b3f5a178e030ea1f0b26201",
+    "visual_size": 4999984,
     "collision": [
       "stage3_collision_0.stl",
       "stage3_collision_1.stl",
@@ -110,7 +110,7 @@
     ]
   },
   "stage6": {
-    "key": "23a284efa96c837a6102f03a291eda8433b132a7e1ddb7e2804510f65d49758b",
+    "key": "4ea415a2915317fcb066c7d138453b9cb63fadcb9db56df78f0b1ae097ee50e6",
     "visual_size": 5000084,
     "collision": [
       "stage6_collision_0.stl",
@@ -132,7 +132,7 @@
     ]
   },
   "stage5": {
-    "key": "ff31ed88282edbae135ba573471308c7ec56cee889627d539230851e4a37ac3d",
+    "key": "0e691b717511e48bcb20da67ecca4be3dd02b3f1eb721894b2e34b831d37a196",
     "visual_size": 5000084,
     "collision": [
       "stage5_collision_0.stl",

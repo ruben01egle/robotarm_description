@@ -220,9 +220,9 @@
                 </geometry>
             </collision>
             <inertial>
-                <mass value="4.1245223"/>
-                <inertia ixx="0.047102574" iyy="0.05265631" izz="0.038670307" ixy="-0.0033636327" ixz="0.0012975466" iyz="0.0013663293"/>
-                <origin xyz="-0.026933184 -0.0075795706 0.24365194" rpy="0 0 0"/>
+                <mass value="4.1295223"/>
+                <inertia ixx="0.04711987" iyy="0.052758273" izz="0.038779356" ixy="-0.0034076629" ixz="0.0013026889" iyz="0.00137008"/>
+                <origin xyz="-0.026966509 -0.0076387808 0.24365317" rpy="0 0 0"/>
             </inertial>
         </link>
         <link name="stage2">
@@ -333,8 +333,8 @@
             </collision>
             <inertial>
                 <mass value="2.7406252"/>
-                <inertia ixx="0.015632044" iyy="0.045377606" izz="0.035942103" ixy="0.00020997342" ixz="0.0022413165" iyz="-5.476555e-05"/>
-                <origin xyz="0.11596177 0.00017406579 -0.0030398822" rpy="0 0 0"/>
+                <inertia ixx="0.015630873" iyy="0.045363405" izz="0.035932694" ixy="0.0002099319" ixz="0.0022474095" iyz="-5.4668965e-05"/>
+                <origin xyz="0.11594204 0.00017508737 -0.0030457475" rpy="0 0 0"/>
             </inertial>
         </link>
         <link name="stage3">
@@ -444,9 +444,9 @@
                 </geometry>
             </collision>
             <inertial>
-                <mass value="1.6469615"/>
-                <inertia ixx="0.0060110115" iyy="0.0079812519" izz="0.0065253041" ixy="-6.3063674e-05" ixz="-0.0001243559" iyz="3.6865535e-05"/>
-                <origin xyz="0.012860142 -0.0037472407 -0.0075171012" rpy="0 0 0"/>
+                <mass value="1.6419615"/>
+                <inertia ixx="0.0060097679" iyy="0.0079791439" izz="0.0065231995" ixy="-6.4363026e-05" ixz="-0.00012366796" iyz="3.6235248e-05"/>
+                <origin xyz="0.012807948 -0.0037012114 -0.0075414714" rpy="0 0 0"/>
             </inertial>
         </link>
         <link name="stage4">
@@ -556,9 +556,9 @@
                 </geometry>
             </collision>
             <inertial>
-                <mass value="1.3112111"/>
-                <inertia ixx="0.006654962" iyy="0.0045428828" izz="0.0039178684" ixy="-4.2352043e-08" ixz="-5.9158815e-05" iyz="-7.5417619e-06"/>
-                <origin xyz="0.0018420611 4.9953961e-05 0.18181643" rpy="0 0 0"/>
+                <mass value="1.4258907"/>
+                <inertia ixx="0.0073721628" iyy="0.0046687098" izz="0.004720552" ixy="-1.204057e-07" ixz="-5.1924686e-05" iyz="-9.6835076e-06"/>
+                <origin xyz="0.00044616577 6.7071049e-05 0.1811569" rpy="0 0 0"/>
             </inertial>
         </link>
         <link name="stage5">
@@ -668,9 +668,9 @@
                 </geometry>
             </collision>
             <inertial>
-                <mass value="0.52892612"/>
-                <inertia ixx="0.0018177525" iyy="0.00081204348" izz="0.0014410487" ixy="1.5383776e-05" ixz="2.3962482e-06" iyz="-6.714111e-05"/>
-                <origin xyz="-0.00028591744 0.070734823 -0.00024303095" rpy="0 0 0"/>
+                <mass value="0.46131333"/>
+                <inertia ixx="0.0015117248" iyy="0.00061441006" izz="0.0011665447" ixy="6.2951363e-07" ixz="-1.5496866e-08" iyz="-7.631966e-05"/>
+                <origin xyz="0.00015471698 0.064290847 0.0018382374" rpy="0 0 0"/>
             </inertial>
         </link>
         <link name="stage6">
@@ -780,9 +780,9 @@
                 </geometry>
             </collision>
             <inertial>
-                <mass value="0.13034853"/>
-                <inertia ixx="0.00010398231" iyy="0.00010370896" izz="2.6012696e-05" ixy="-2.3317762e-09" ixz="6.7222444e-07" iyz="-2.427796e-08"/>
-                <origin xyz="-0.00014007328 -3.9391709e-06 0.10326212" rpy="0 0 0"/>
+                <mass value="0.12923876"/>
+                <inertia ixx="0.00010180441" iyy="0.00010153115" izz="2.5924876e-05" ixy="-2.3311655e-09" ixz="6.6812004e-07" iyz="-2.4387732e-08"/>
+                <origin xyz="-0.00014121008 -3.9726634e-06 0.10347552" rpy="0 0 0"/>
             </inertial>
         </link>
         <joint name="axis1" type="revolute">
@@ -791,7 +791,7 @@
             <child link="stage1"/>
             <axis xyz="0 0 1"/>
             <limit effort="8" velocity="3.14" lower="-3.0543262" upper="3.0543262"/>
-            <armature value="0.00648"/>
+            <armature value="0.00693"/>
         </joint>
         <joint name="axis2" type="revolute">
             <origin xyz="0.025 0 0.35" rpy="-1.5707963 0 0"/>
@@ -799,39 +799,39 @@
             <child link="stage2"/>
             <axis xyz="0 0 1"/>
             <limit effort="35" velocity="2.5" lower="-2.7925268" upper="0.34906585"/>
-            <armature value="0.162"/>
+            <armature value="0.178"/>
         </joint>
         <joint name="axis3" type="revolute">
             <origin xyz="0.3 0 0.0185" rpy="0 0 0"/>
             <parent link="stage2"/>
             <child link="stage3"/>
             <axis xyz="0 0 1"/>
-            <limit effort="15" velocity="2.5" lower="-2.0943951" upper="2.3561945"/>
-            <armature value="0.023617"/>
+            <limit effort="15" velocity="2.5" lower="-2.0943951" upper="2.3212879"/>
+            <armature value="0.0254"/>
         </joint>
         <joint name="axis4" type="revolute">
             <origin xyz="0 -0.015 0" rpy="-1.5707963 0 -1.5707963"/>
             <parent link="stage3"/>
             <child link="stage4"/>
             <axis xyz="0 0 1"/>
-            <limit effort="5" velocity="2.5" lower="-3.0543262" upper="3.0543262"/>
-            <armature value="0.00288"/>
+            <limit effort="5" velocity="2.5" lower="-2.9670597" upper="2.9670597"/>
+            <armature value="0.00299"/>
         </joint>
         <joint name="axis5" type="revolute">
-            <origin xyz="0 0 0.252" rpy="1.5707963 0 0"/>
+            <origin xyz="0 0.002 0.252" rpy="1.5707963 0 0"/>
             <parent link="stage4"/>
             <child link="stage5"/>
             <axis xyz="0 0 1"/>
-            <limit effort="4" velocity="2.5" lower="-2.0071286" upper="2.0071286"/>
-            <armature value="0.00072"/>
+            <limit effort="4" velocity="2.5" lower="-1.9896753" upper="2.0071286"/>
+            <armature value="0.000991"/>
         </joint>
         <joint name="axis6" type="revolute">
-            <origin xyz="0 0 0" rpy="-1.5707963 0 0"/>
+            <origin xyz="0 0 0.002" rpy="-1.5707963 0 0"/>
             <parent link="stage5"/>
             <child link="stage6"/>
             <axis xyz="0 0 1"/>
             <limit effort="4" velocity="2.5" lower="-3.0543262" upper="3.0543262"/>
-            <armature value="0.00072"/>
+            <armature value="0.000991"/>
         </joint>
         <link name="flange"/>
         <joint name="flange_joint" type="fixed">

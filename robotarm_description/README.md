@@ -29,6 +29,25 @@ ONSHAPE_SECRET_KEY=...
 
 Output goes to `./output/` (URDF, meshes, xacro), relative to wherever you run it from.
 
+### Reusing downloaded meshes
+
+Set `reuse_downloads=True` in the `URDFSerializer().save(...)` call to skip downloading meshes that an
+earlier export already fetched. This saves several Onshape API calls per link; the CAD, mates and
+mass properties are still fetched every run.
+
+No extra path is needed: it looks in `MESH_DIR` (`output/meshes`, relative to where you run the
+script). Because `mesh_options` is set, the full-resolution downloads are kept in
+`output/meshes/source/<mesh>.stl`, and those are the files it checks. A file is reused only if it is
+a complete STL; anything missing or truncated is downloaded again, so after a failed download a rerun
+with `reuse_downloads=True` only fetches the failed meshes.
+
+So it only works if you run from the same directory as the earlier export and `output/meshes/source/`
+is still there. The processed meshes in this package's `meshes/` are not used for this.
+
+Turn it off (or delete the affected files in `output/meshes/source/`) after changing the CAD or the
+mates: meshes are stored in the link frame, so a reused mesh picks up neither geometry changes nor
+moved link frames.
+
 ## Tools on the flange
 
 The arm export ends in a fixed `flange_joint` → `flange` link (`FLANGE_XYZ` / `FLANGE_RPY` in
