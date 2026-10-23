@@ -117,8 +117,8 @@
         <param name="wrist_a.can_id">5</param>
         <param name="wrist_b.can_id">6</param>
         <param name="ratio">1.0</param>
-        <param name="joint1_encoder_actuator">wrist_a</param>
-        <param name="joint2_encoder_actuator">wrist_b</param>
+        <param name="joint1_encoder_actuator">wrist_b</param>
+        <param name="joint2_encoder_actuator">wrist_a</param>
       </transmission>
 
       </ros2_control>
